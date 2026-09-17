@@ -9,6 +9,7 @@ dependencies = [
     "rasterio",
     "xarray",
     "netCDF4",
+    "requests",
     "pillow",
     "tqdm",
 ]
