@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Data & model artifacts (large; fetched by scripts, never committed)
+data/
+checkpoints/
+runs/
+outputs/
+*.tif
+*.tiff
+*.nc
+*.npy
+*.npz
+*.pt
+*.pth
+*.safetensors
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
