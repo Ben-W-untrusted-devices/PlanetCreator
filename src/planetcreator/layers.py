@@ -43,20 +43,32 @@ def load_bmng(path: Path) -> EquirectGrid:
     return EquirectGrid(np.ascontiguousarray(np.moveaxis(rgb, 0, -1)))
 
 
-def _fill_nodata_zonal(a: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Replace invalid cells (oceans in WorldClim) with the row's mean of valid cells.
+def _fill_nodata_zonal(a: np.ndarray, valid: np.ndarray, band_rows: int | None = None) -> np.ndarray:
+    """Replace invalid cells (oceans in WorldClim) with a latitude-band mean of valid cells.
 
     A latitude-band mean is a crude sea-surface proxy but keeps the
-    conditioning field smooth across coastlines.
+    conditioning field smooth across coastlines. The band is a count-weighted
+    moving average of ~1 degree so rows with only a few valid pixels (the
+    northernmost land) do not produce outliers; rows with no valid data in
+    range (beyond the last land row) take the nearest band's value.
     """
+    h = a.shape[0]
+    band_rows = band_rows or max(1, round(h / 180))
+    k = np.ones(band_rows)
+    row_sum = np.convolve(np.where(valid, a, 0).sum(axis=1, dtype=np.float64), k, mode="same")
+    row_cnt = np.convolve(valid.sum(axis=1).astype(np.float64), k, mode="same")
+    ok = np.flatnonzero(row_cnt > 0)
+    row_mean = np.interp(np.arange(h), ok, row_sum[ok] / row_cnt[ok])
+    # Polar gaps (beyond the first/last row with data) take a wider 5-band mean so a
+    # sparse edge row does not set the whole cap.
+    raw_sum = np.where(valid, a, 0).sum(axis=1, dtype=np.float64)
+    raw_cnt = valid.sum(axis=1).astype(np.float64)
+    wide = 5 * band_rows
+    first, last = np.flatnonzero(raw_cnt)[[0, -1]]
+    row_mean[:first] = raw_sum[first : first + wide].sum() / max(raw_cnt[first : first + wide].sum(), 1)
+    row_mean[last + 1 :] = raw_sum[last - wide + 1 : last + 1].sum() / max(raw_cnt[last - wide + 1 : last + 1].sum(), 1)
     out = a.copy()
-    row_sum = np.where(valid, a, 0).sum(axis=1)
-    row_cnt = valid.sum(axis=1)
-    row_mean = np.where(row_cnt > 0, row_sum / np.maximum(row_cnt, 1), np.nan)
-    # Rows with no land at all (open Southern Ocean): interpolate from neighbours.
-    ok = ~np.isnan(row_mean)
-    row_mean = np.interp(np.arange(len(row_mean)), np.flatnonzero(ok), row_mean[ok])
-    out[~valid] = np.broadcast_to(row_mean[:, None], a.shape)[~valid]
+    out[~valid] = np.broadcast_to(row_mean[:, None].astype(a.dtype), a.shape)[~valid]
     return out
 
 
@@ -79,7 +91,12 @@ def load_worldclim(zip_path: Path, var: str) -> dict[str, EquirectGrid]:
                 nodata = src.nodata
     stack = np.stack(months)
     valid = np.all(stack != nodata, axis=0) if nodata is not None else np.isfinite(stack).all(0)
+    if var == "tavg":
+        # WorldClim 2.1 has ~16k high-latitude coastal pixels that read exactly 0.0 in
+        # every month; a real annual cycle never does that, so treat them as nodata.
+        valid &= ~np.all(stack == 0, axis=0)
     out: dict[str, EquirectGrid] = {"land": EquirectGrid(valid)}
+    stack[:, ~valid] = 0  # keep the nodata sentinel out of the reductions
     if var == "tavg":
         out["tavg"] = EquirectGrid(_fill_nodata_zonal(stack.mean(0), valid))
         out["trange"] = EquirectGrid(_fill_nodata_zonal(stack.max(0) - stack.min(0), valid))
