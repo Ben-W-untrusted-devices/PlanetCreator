@@ -50,6 +50,24 @@ uv run scripts/colorize_face.py runs/colorize/last.pt --face ny       # full-fac
 Training writes `log.csv`, `val_<step>.png` (rows: height / prediction /
 truth on held-out patches) and `last.pt` to the run directory.
 
+## Synthetic planets
+
+```bash
+uv run scripts/make_planet.py --seed 3 --res 2048 --land 0.3 --humidity 1.0   # ~4 min on an M1
+```
+
+`planetcreator.procgen` builds height (continents, shelves, mountain belts)
+and climate (latitude, altitude, continentality) fields from seamless 3D
+noise on the sphere; the colouriser paints them. Output goes to
+`data/planets/seed<N>/` in baked-cube layout, so `PlanetMesh` loads it:
+
+```bash
+/Applications/Godot.app/Contents/MacOS/Godot --path godot --resolution 1000x1000 -s scripts/capture.gd -- /tmp/p.png "$PWD/data/planets/seed3" 0.6 0.3
+```
+
+Parameters are tuned so land climate/height distributions sit near Earth's
+(median precip ~650 mm vs 499, 15% of land above 2000 m vs 10%).
+
 ## Runtime (Godot 4 + Rust)
 
 ```bash

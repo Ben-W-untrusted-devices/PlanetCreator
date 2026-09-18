@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from planetcreator.colorize import Colorizer, pick_device, tile_infer
-from planetcreator.features import COND_LAYERS
+from planetcreator.features import COND_LAYERS, px_km_for_face
 
 
 def main() -> None:
@@ -28,7 +28,8 @@ def main() -> None:
     d = args.downsample
     layers = {n: np.load(args.cube / args.face / f"{n}.npy", mmap_mode="r")[::d, ::d] for n in COND_LAYERS}
     model, _ = Colorizer.load(args.checkpoint)
-    rgb = tile_infer(model, layers, device=pick_device(args.device), sea_level=args.sea_level)
+    res = layers["height"].shape[0]
+    rgb = tile_infer(model, layers, device=pick_device(args.device), sea_level=args.sea_level, px_km=px_km_for_face(res))
     Image.fromarray(rgb).save(out / f"{args.face}_pred.png")
     true = np.load(args.cube / args.face / "rgb.npy", mmap_mode="r")[::d, ::d]
     Image.fromarray(np.asarray(true)).save(out / f"{args.face}_true.png")

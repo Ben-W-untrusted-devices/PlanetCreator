@@ -80,3 +80,16 @@ def test_adversarial_step_runs():
     g_loss, parts = m.loss(pred, target, d(cond, pred))
     g_loss.backward()
     assert "adv" in parts and torch.isfinite(g_loss) and torch.isfinite(d_loss)
+
+
+def test_slope_is_resolution_invariant():
+    from planetcreator.features import px_km_for_face
+
+    # A 4 m/px ramp at 1024 px equals a 1 m/px ramp at 4096 px in metres per km.
+    b_hi = _batch(b=1, n=32)
+    b_hi["height"] = torch.arange(32.0).repeat(32, 1)[None, None] * 1.0
+    b_lo = {k: v.clone() for k, v in b_hi.items()}
+    b_lo["height"] = torch.arange(32.0).repeat(32, 1)[None, None] * 4.0
+    hi = build_cond(b_hi, px_km=px_km_for_face(4096))[0, 1, 5:-5, 5:-5]
+    lo = build_cond(b_lo, px_km=px_km_for_face(1024))[0, 1, 5:-5, 5:-5]
+    assert torch.allclose(hi, lo, atol=1e-5)

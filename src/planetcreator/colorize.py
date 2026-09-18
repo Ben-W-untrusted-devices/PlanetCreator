@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .features import COND_CHANNELS, build_cond
+from .features import COND_CHANNELS, TRAIN_PX_KM, build_cond
 from .models import PatchDiscriminator, UNet, hinge_d_loss, hinge_g_loss
 
 
@@ -82,6 +82,7 @@ def tile_infer(
     batch: int = 8,
     device: str = "cpu",
     sea_level: float = 0.0,
+    px_km: float = TRAIN_PX_KM,
 ) -> np.ndarray:
     """Run the model over full (N, N) layer arrays with overlapping, Hann-blended tiles.
 
@@ -104,7 +105,7 @@ def tile_infer(
             )[:, None].to(device)
             for name, a in layers.items()
         }
-        pred = model(build_cond(b, sea_level))
+        pred = model(build_cond(b, sea_level, px_km))
         for (i, j), p in zip(chunk, pred):
             acc[:, i : i + tile, j : j + tile] += p * win
             wsum[:, i : i + tile, j : j + tile] += win

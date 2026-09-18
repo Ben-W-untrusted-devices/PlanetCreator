@@ -16,7 +16,10 @@ COND_LAYERS = ("height", "lat", "tavg", "trange", "prec")
 COND_CHANNELS = ("height", "slope", "ocean", "lat", "tavg", "trange", "prec")
 
 HEIGHT_SCALE = 4000.0  # m
-SLOPE_SCALE = 6.0  # log1p(m/px)
+SLOPE_SCALE = 6.0  # log1p(m per training pixel)
+# Slope is expressed per *training* pixel so rasters of any resolution condition the
+# model identically: a 4096-px cube face spans a quarter circumference of Earth.
+TRAIN_PX_KM = 40_075.0 / 4 / 4096  # ~2.45 km
 TAVG_SCALE = 30.0  # degC
 TRANGE_SCALE = 40.0  # degC
 PREC_LOG_SCALE = 9.0  # log1p(mm/yr); log1p(8000) ~= 9
@@ -30,13 +33,22 @@ def slope_magnitude(height: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(dx * dx + dy * dy)
 
 
-def build_cond(batch: dict[str, torch.Tensor], sea_level: float = 0.0) -> torch.Tensor:
-    """(B, len(COND_CHANNELS), H, W) float tensor from raw layer tensors (each (B,1,H,W))."""
+def px_km_for_face(resolution: int) -> float:
+    """Kilometres per pixel of an Earth-sized cube face raster at this resolution."""
+    return 40_075.0 / 4 / resolution
+
+
+def build_cond(batch: dict[str, torch.Tensor], sea_level: float = 0.0, px_km: float = TRAIN_PX_KM) -> torch.Tensor:
+    """(B, len(COND_CHANNELS), H, W) float tensor from raw layer tensors (each (B,1,H,W)).
+
+    ``px_km`` is the raster's pixel spacing; slope is rescaled to metres per training pixel.
+    """
     h = batch["height"] - sea_level
+    slope = slope_magnitude(h) * (TRAIN_PX_KM / px_km)
     return torch.cat(
         [
             h / HEIGHT_SCALE,
-            torch.log1p(slope_magnitude(h)) / SLOPE_SCALE,
+            torch.log1p(slope) / SLOPE_SCALE,
             (h < 0).float(),
             batch["lat"] / 90.0,
             batch["tavg"] / TAVG_SCALE,
