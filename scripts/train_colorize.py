@@ -62,6 +62,8 @@ def main() -> None:
     ap.add_argument("--base", type=int, default=32)
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--min-land", type=float, default=0.3)
+    ap.add_argument("--adv", type=float, default=0.0, help="adversarial weight; >0 trains a PatchGAN too")
+    ap.add_argument("--d-lr", type=float, default=2e-4)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--val-patches", type=int, default=64)
@@ -86,34 +88,48 @@ def main() -> None:
     val_dl = DataLoader(val_ds, batch_size=args.batch, **dl_kw)
     val_batch = next(iter(val_dl))
 
-    model = Colorizer(ColorizeConfig(base=args.base, depth=args.depth)).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, args.lr, total_steps=args.steps, pct_start=0.05)
     step = 0
     if args.resume:
+        # Resume weights; the optimiser/schedule restart so a run can e.g. add --adv to an L1 model.
         model, ck = Colorizer.load(args.resume, device)
+        model.cfg.adv_weight = args.adv
         model.to(device)
-        opt.load_state_dict(ck["opt"])
-        sched.load_state_dict(ck["sched"])
-        step = ck["step"]
-    print(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+        print(f"resumed weights from {args.resume} (step {ck.get('step')})")
+    else:
+        model = Colorizer(ColorizeConfig(base=args.base, depth=args.depth, adv_weight=args.adv)).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, args.lr, total_steps=args.steps, pct_start=0.05)
+    disc = d_opt = None
+    if args.adv > 0:
+        disc = model.make_discriminator().to(device)
+        d_opt = torch.optim.Adam(disc.parameters(), lr=args.d_lr, betas=(0.0, 0.99))
+    print(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M"
+          + (f" + D {sum(p.numel() for p in disc.parameters()) / 1e6:.2f}M" if disc else ""))
 
     with open(args.out / "log.csv", "a", newline="") as log:
-        train(args, model, opt, sched, step, train_dl, val_dl, val_batch, device, log)
+        train(args, model, opt, sched, disc, d_opt, step, train_dl, val_dl, val_batch, device, log)
 
 
-def train(args, model, opt, sched, step, train_dl, val_dl, val_batch, device, log) -> None:
+def train(args, model, opt, sched, disc, d_opt, step, train_dl, val_dl, val_batch, device, log) -> None:
     writer = csv.writer(log)
     if log.tell() == 0:
-        writer.writerow(["step", "loss", "l1", "grad", "val_l1", "lr", "sec"])
+        writer.writerow(["step", "loss", "l1", "grad", "adv", "d", "val_l1", "lr", "sec"])
     t0 = time.time()
     model.train()
     for b in train_dl:
         if step >= args.steps:
             break
         b = to_dev(b, device)
-        pred = model(build_cond(b))
-        loss, parts = model.loss(pred, b["rgb"])
+        cond = build_cond(b)
+        pred = model(cond)
+        d_val = float("nan")
+        if disc is not None:
+            d_loss = model.d_loss(disc(cond, b["rgb"]), disc(cond, pred.detach()))
+            d_opt.zero_grad(set_to_none=True)
+            d_loss.backward()
+            d_opt.step()
+            d_val = d_loss.item()
+        loss, parts = model.loss(pred, b["rgb"], disc(cond, pred) if disc is not None else None)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -121,13 +137,15 @@ def train(args, model, opt, sched, step, train_dl, val_dl, val_batch, device, lo
         sched.step()
         step += 1
         if step % 50 == 0:
-            print(f"step {step} loss {loss.item():.4f} l1 {parts['l1']:.4f} {(time.time() - t0) / step:.2f}s/it", flush=True)
+            extra = f" adv {parts['adv']:.3f} d {d_val:.3f}" if disc is not None else ""
+            print(f"step {step} loss {loss.item():.4f} l1 {parts['l1']:.4f}{extra} {(time.time() - t0) / step:.2f}s/it", flush=True)
         if step % args.eval_every == 0 or step == args.steps:
             val_l1 = evaluate(model, val_dl, device)
-            writer.writerow([step, loss.item(), parts["l1"], parts["grad"], val_l1, sched.get_last_lr()[0], time.time() - t0])
+            writer.writerow([step, loss.item(), parts["l1"], parts["grad"], parts.get("adv", float("nan")), d_val,
+                             val_l1, sched.get_last_lr()[0], time.time() - t0])
             log.flush()
             sample_grid(model, val_batch, device, args.out / f"val_{step:06d}.png")
-            model.save(args.out / "last.pt", step=step, opt=opt.state_dict(), sched=sched.state_dict())
+            model.save(args.out / "last.pt", step=step, disc=disc.state_dict() if disc else None)
             print(f"  val_l1 {val_l1:.4f}  saved", flush=True)
 
 

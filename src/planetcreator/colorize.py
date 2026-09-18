@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .features import COND_CHANNELS, build_cond
-from .models import UNet
+from .models import PatchDiscriminator, UNet, hinge_d_loss, hinge_g_loss
 
 
 @dataclass
@@ -19,6 +19,7 @@ class ColorizeConfig:
     base: int = 32
     depth: int = 4
     grad_weight: float = 0.5  # weight of the image-gradient L1 term
+    adv_weight: float = 0.0  # weight of the adversarial term; 0 disables the discriminator
 
 
 class Colorizer(nn.Module):
@@ -30,13 +31,31 @@ class Colorizer(nn.Module):
     def forward(self, cond: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(self.net(cond))
 
-    def loss(self, pred: torch.Tensor, target: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
+    def make_discriminator(self) -> PatchDiscriminator:
+        return PatchDiscriminator(len(COND_CHANNELS) + 3)
+
+    def loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        fake_logits: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Generator loss: L1 + gradient L1 (+ hinge adversarial when logits are given)."""
         l1 = F.l1_loss(pred, target)
         gp = pred[..., 1:, :] - pred[..., :-1, :], pred[..., :, 1:] - pred[..., :, :-1]
         gt = target[..., 1:, :] - target[..., :-1, :], target[..., :, 1:] - target[..., :, :-1]
         grad = F.l1_loss(gp[0], gt[0]) + F.l1_loss(gp[1], gt[1])
         total = l1 + self.cfg.grad_weight * grad
-        return total, {"l1": l1.item(), "grad": grad.item()}
+        parts = {"l1": l1.item(), "grad": grad.item()}
+        if fake_logits is not None and self.cfg.adv_weight > 0:
+            adv = hinge_g_loss(fake_logits)
+            total = total + self.cfg.adv_weight * adv
+            parts["adv"] = adv.item()
+        return total, parts
+
+    @staticmethod
+    def d_loss(real_logits: torch.Tensor, fake_logits: torch.Tensor) -> torch.Tensor:
+        return hinge_d_loss(real_logits, fake_logits)
 
     def save(self, path: Path, **extra) -> None:
         torch.save({"cfg": asdict(self.cfg), "state": self.state_dict(), **extra}, path)

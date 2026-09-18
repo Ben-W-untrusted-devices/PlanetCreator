@@ -54,3 +54,33 @@ class UNet(nn.Module):
             x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
             x = blk(torch.cat([x, skips.pop()], dim=1))
         return self.head(x)
+
+
+class PatchDiscriminator(nn.Module):
+    """Conditional PatchGAN: scores (cond, rgb) pairs on overlapping 70-ish px patches.
+
+    Spectral norm keeps the hinge game stable without gradient penalties.
+    """
+
+    def __init__(self, in_ch: int, base: int = 32, layers: int = 3):
+        super().__init__()
+        sn = nn.utils.spectral_norm
+        seq: list[nn.Module] = [sn(nn.Conv2d(in_ch, base, 4, 2, 1)), nn.LeakyReLU(0.2)]
+        c = base
+        for i in range(1, layers):
+            n = min(base * 2**i, 256)
+            seq += [sn(nn.Conv2d(c, n, 4, 2, 1)), nn.LeakyReLU(0.2)]
+            c = n
+        seq += [sn(nn.Conv2d(c, c, 4, 1, 1)), nn.LeakyReLU(0.2), sn(nn.Conv2d(c, 1, 4, 1, 1))]
+        self.net = nn.Sequential(*seq)
+
+    def forward(self, cond: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([cond, rgb], dim=1))
+
+
+def hinge_d_loss(real_logits: torch.Tensor, fake_logits: torch.Tensor) -> torch.Tensor:
+    return F.relu(1 - real_logits).mean() + F.relu(1 + fake_logits).mean()
+
+
+def hinge_g_loss(fake_logits: torch.Tensor) -> torch.Tensor:
+    return -fake_logits.mean()

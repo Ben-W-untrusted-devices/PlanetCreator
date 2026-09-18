@@ -63,3 +63,20 @@ def test_tile_infer_matches_direct(tmp_path):
     m.save(tmp_path / "m.pt", step=3)
     m2, ck = Colorizer.load(tmp_path / "m.pt")
     assert ck["step"] == 3 and m2.cfg == m.cfg
+
+
+def test_adversarial_step_runs():
+    torch.manual_seed(0)
+    m = Colorizer(ColorizeConfig(base=8, depth=2, adv_weight=0.1))
+    d = m.make_discriminator()
+    b = _batch()
+    cond = build_cond(b)
+    target = torch.rand(2, 3, 64, 64)
+    pred = m(cond)
+    logits = d(cond, pred)
+    assert logits.shape[0] == 2 and logits.shape[1] == 1 and logits.shape[-1] < 64
+    d_loss = m.d_loss(d(cond, target), d(cond, pred.detach()))
+    d_loss.backward()
+    g_loss, parts = m.loss(pred, target, d(cond, pred))
+    g_loss.backward()
+    assert "adv" in parts and torch.isfinite(g_loss) and torch.isfinite(d_loss)
