@@ -36,6 +36,20 @@ latitude-band mean), `land` (WorldClim valid mask), `lat`/`lon` (deg),
 `planetcreator.dataset.CubePatchDataset` yields random aligned patches with
 rotation/flip augmentation, deterministic per `(seed, index)`.
 
+## Colouriser (phase 1 model)
+
+`(height, slope, ocean, lat, tavg, trange, prec) -> rgb`, a 7.9M-param UNet
+(`planetcreator.colorize`). Conditioning channels and their scales are in
+`planetcreator.features` — the runtime must build the same tensor.
+
+```bash
+uv run scripts/train_colorize.py --steps 20000 --out runs/colorize   # ~0.7 s/it on an M1
+uv run scripts/colorize_face.py runs/colorize/last.pt --face ny       # full-face render vs truth
+```
+
+Training writes `log.csv`, `val_<step>.png` (rows: height / prediction /
+truth on held-out patches) and `last.pt` to the run directory.
+
 ## Layout
 
 - `src/planetcreator/` — library code
