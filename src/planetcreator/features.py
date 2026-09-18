@@ -1,7 +1,16 @@
-"""Turn a batch of raw layers into the normalised conditioning tensor the models see.
+"""Turn raw layers into the normalised conditioning tensors the models see.
 
-Kept deliberately simple and documented, because the Godot side will have to
-build the same tensor from its own procedural layers at runtime.
+Kept simple and documented, because the Godot side will have to build the same
+tensors from its own procedural layers at runtime.
+
+Two modes share one channel layout:
+
+* ``colour``: fine height and its derived channels are known; predict RGB.
+* ``joint``: only the coarse (context-resolution) height and derived channels are known;
+  predict fine height and RGB. The per-pixel channels come from the centre of the context
+  window upsampled to patch resolution, so the network's input width is identical.
+
+Plus the coarse context window (``ctx_*`` layers) in both modes.
 """
 
 from __future__ import annotations
@@ -9,20 +18,27 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-# Layers the colouriser needs from the cube (dataset must yield all of these).
-COND_LAYERS = ("height", "lat", "tavg", "trange", "prec")
+from .bake import CTX_LAYERS, DIST_NAMES
 
-# Channel order of the conditioning tensor.
-COND_CHANNELS = ("height", "slope", "ocean", "lat", "tavg", "trange", "prec")
+# Channel order of the per-pixel conditioning tensor.
+COND_CHANNELS = ("height", "slope", "ocean", "water", "flowacc", *DIST_NAMES, "lat", "tavg", "trange", "prec")
+CTX_CHANNELS = CTX_LAYERS  # height, water, flowacc, dist x4, tavg, trange, prec, lat
 
 HEIGHT_SCALE = 4000.0  # m
 SLOPE_SCALE = 6.0  # log1p(m per training pixel)
-# Slope is expressed per *training* pixel so rasters of any resolution condition the
-# model identically: a 4096-px cube face spans a quarter circumference of Earth.
-TRAIN_PX_KM = 40_075.0 / 4 / 4096  # ~2.45 km
+FLOWACC_SCALE = 6.0  # log10(1 + km^2)
+DIST_SCALE = 8.0  # log1p(km)
 TAVG_SCALE = 30.0  # degC
 TRANGE_SCALE = 40.0  # degC
 PREC_LOG_SCALE = 9.0  # log1p(mm/yr); log1p(8000) ~= 9
+# Slope is expressed per *training* pixel so rasters of any resolution condition the
+# model identically: a 4096-px cube face spans a quarter circumference of Earth.
+TRAIN_PX_KM = 40_075.0 / 4 / 4096  # ~2.45 km
+
+
+def px_km_for_face(resolution: int) -> float:
+    """Kilometres per pixel of an Earth-sized cube face raster at this resolution."""
+    return 40_075.0 / 4 / resolution
 
 
 def slope_magnitude(height: torch.Tensor) -> torch.Tensor:
@@ -33,27 +49,73 @@ def slope_magnitude(height: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(dx * dx + dy * dy)
 
 
-def px_km_for_face(resolution: int) -> float:
-    """Kilometres per pixel of an Earth-sized cube face raster at this resolution."""
-    return 40_075.0 / 4 / resolution
+def _norm(name: str, x: torch.Tensor) -> torch.Tensor:
+    if name == "height":
+        return x / HEIGHT_SCALE
+    if name in ("water", "ocean"):
+        return x.float()
+    if name == "flowacc":
+        return x / FLOWACC_SCALE
+    if name.startswith("dist_"):
+        return x / DIST_SCALE
+    if name == "lat":
+        return x / 90.0
+    if name == "tavg":
+        return x / TAVG_SCALE
+    if name == "trange":
+        return x / TRANGE_SCALE
+    if name == "prec":
+        return torch.log1p(x.clamp(min=0)) / PREC_LOG_SCALE
+    raise KeyError(name)
 
 
-def build_cond(batch: dict[str, torch.Tensor], sea_level: float = 0.0, px_km: float = TRAIN_PX_KM) -> torch.Tensor:
-    """(B, len(COND_CHANNELS), H, W) float tensor from raw layer tensors (each (B,1,H,W)).
+def build_ctx(batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    """(B, len(CTX_CHANNELS), Pc, Pc) normalised context tensor."""
+    return torch.cat([_norm(name, batch[f"ctx_{name}"]) for name in CTX_CHANNELS], dim=1)
+
+
+def coarse_from_ctx(batch: dict[str, torch.Tensor], patch: int, pad: int, factor: int) -> dict[str, torch.Tensor]:
+    """The centre of the context window (the patch's own footprint) upsampled to patch
+    resolution, as raw-unit layers: what a generator knows about a patch at coarse scale."""
+    c0, cs = pad // factor, patch // factor
+    out = {}
+    for name in ("height", "water", "flowacc", *DIST_NAMES):
+        crop = batch[f"ctx_{name}"][..., c0 : c0 + cs, c0 : c0 + cs].float()
+        mode = "nearest" if name == "water" else "bilinear"
+        kw = {} if mode == "nearest" else {"align_corners": False}
+        out[name] = F.interpolate(crop, scale_factor=factor, mode=mode, **kw)
+    return out
+
+
+def build_cond(
+    batch: dict[str, torch.Tensor],
+    mode: str = "colour",
+    sea_level: float = 0.0,
+    px_km: float = TRAIN_PX_KM,
+    ctx_pad: int = 896,
+    ctx_factor: int = 8,
+) -> torch.Tensor:
+    """(B, len(COND_CHANNELS), P, P) per-pixel conditioning.
 
     ``px_km`` is the raster's pixel spacing; slope is rescaled to metres per training pixel.
+    In ``joint`` mode the height-derived channels are taken from the context (coarse) layers.
     """
-    h = batch["height"] - sea_level
+    if mode == "joint":
+        src = coarse_from_ctx(batch, batch["lat"].shape[-1], ctx_pad, ctx_factor)
+    else:
+        src = batch
+    h = src["height"] - sea_level
     slope = slope_magnitude(h) * (TRAIN_PX_KM / px_km)
-    return torch.cat(
-        [
-            h / HEIGHT_SCALE,
-            torch.log1p(slope) / SLOPE_SCALE,
-            (h < 0).float(),
-            batch["lat"] / 90.0,
-            batch["tavg"] / TAVG_SCALE,
-            batch["trange"] / TRANGE_SCALE,
-            torch.log1p(batch["prec"].clamp(min=0)) / PREC_LOG_SCALE,
-        ],
-        dim=1,
-    )
+    chans = [
+        h / HEIGHT_SCALE,
+        torch.log1p(slope) / SLOPE_SCALE,
+        (h < 0).float(),
+        _norm("water", src["water"]),
+        _norm("flowacc", src["flowacc"]),
+        *(_norm(d, src[d]) for d in DIST_NAMES),
+        _norm("lat", batch["lat"]),
+        _norm("tavg", batch["tavg"]),
+        _norm("trange", batch["trange"]),
+        _norm("prec", batch["prec"]),
+    ]
+    return torch.cat(chans, dim=1)
