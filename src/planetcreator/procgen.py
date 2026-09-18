@@ -42,6 +42,7 @@ class Planet:
         self.n_belt = Perlin3(s + 3)
         self.n_detail = Perlin3(s + 4)
         self.n_prec = Perlin3(s + 5)
+        self.n_basin = Perlin3(s + 6)
         self._threshold = self._calibrate_threshold()
 
     # -- fields ---------------------------------------------------------------------------
@@ -64,7 +65,10 @@ class Planet:
         c = self.continent_field(d) - self._threshold  # >0 land
         # Land: gentle lowlands rising inland, plus mountain belts where a second field is high.
         inland = np.clip(c / 0.2, 0, 1)
-        lowland = p.land_height_m * (0.1 + 0.9 * inland) * (0.5 + 0.5 * fbm(self.n_detail, d, 6.0, 5))
+        # Continental-scale basins: a slow field tilts the lowlands so interiors drain through
+        # a few trunk valleys instead of radially off every coast.
+        basin = 0.5 + 0.5 * fbm(self.n_basin, warp(self.n_warp, d, 0.6, 0.3), 0.9, 3)
+        lowland = p.land_height_m * (0.1 + 0.9 * inland) * (0.25 + 0.75 * basin) * (0.5 + 0.5 * fbm(self.n_detail, d, 6.0, 5))
         belt = np.clip((fbm(self.n_belt, d, 1.6, 3) + 0.02) / 0.3, 0, 1) * np.clip(c / 0.08, 0, 1)
         mountains = p.mountain_height_m * belt * ridged(self.n_mount, d, 5.0, 6) ** 1.3
         land = lowland + mountains
@@ -124,3 +128,42 @@ def generate_face(planet: Planet, face: int, n: int, coast_radius_px: int | None
     layers = {"height": height, "lat": lat.astype(np.float32), "lon": lon.astype(np.float32)}
     layers.update(planet.climate(d, height, cont))
     return layers
+
+
+def equirect_dirs(H: int, W: int) -> np.ndarray:
+    """Unit directions at the centres of an H x W canonical equirect grid, shape (H, W, 3)."""
+    from .cubesphere import latlon_to_dir
+
+    lat = 90 - (np.arange(H) + 0.5) * 180 / H
+    lon = -180 + (np.arange(W) + 0.5) * 360 / W
+    return latlon_to_dir(lat[:, None], lon[None, :]).astype(np.float32)
+
+
+def generate_equirect(planet: Planet, H: int, W: int, rows_per_chunk: int = 256) -> dict[str, np.ndarray]:
+    """Base height and climate on an equirect grid (climate uses continentality of the base map)."""
+    d = equirect_dirs(H, W)
+    height = np.empty((H, W), dtype=np.float32)
+    for r0 in range(0, H, rows_per_chunk):
+        height[r0 : r0 + rows_per_chunk] = planet.height(d[r0 : r0 + rows_per_chunk])
+    return {"height": height, "dirs": d}
+
+
+def uplift_field(planet: Planet, d: np.ndarray, base_height: np.ndarray, max_mm_yr: float) -> np.ndarray:
+    """Uplift rate proportional to the base map's relief above the lowlands: mountain belts
+    keep rising while rivers cut them; plains get a trickle so they stay above the sea."""
+    p = planet.p
+    land = base_height > 0
+    rel = np.clip((base_height - 0.6 * p.land_height_m) / p.mountain_height_m, 0, 1)
+    return np.where(land, max_mm_yr * (0.04 + 0.96 * rel**1.2), 0.0).astype(np.float64)
+
+
+def climate_equirect(planet: Planet, d: np.ndarray, height: np.ndarray, rows_per_chunk: int = 256) -> dict[str, np.ndarray]:
+    H, W = height.shape
+    cont = continentality_from_height(height, max(4, H // 20))
+    out = {k: np.empty((H, W), dtype=np.float32) for k in ("tavg", "trange", "prec")}
+    for r0 in range(0, H, rows_per_chunk):
+        sl = slice(r0, r0 + rows_per_chunk)
+        c = planet.climate(d[sl], height[sl], cont[sl])
+        for k, arr in out.items():
+            arr[sl] = c[k]
+    return out

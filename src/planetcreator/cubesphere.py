@@ -74,7 +74,7 @@ def dir_to_latlon(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def latlon_to_dir(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
-    la, lo = np.radians(lat), np.radians(lon)
+    la, lo = np.broadcast_arrays(np.radians(lat), np.radians(lon))
     c = np.cos(la)
     return np.stack([c * np.cos(lo), c * np.sin(lo), np.sin(la)], axis=-1)
 
