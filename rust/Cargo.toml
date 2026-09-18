@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/planet-core", "crates/planet-godot"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+opt-level = 1          # mesh/texture building is too slow fully unoptimised
+
+[profile.dev.package."*"]
+opt-level = 3

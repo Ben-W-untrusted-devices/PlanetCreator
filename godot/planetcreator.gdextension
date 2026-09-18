@@ -1,0 +1,14 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.5
+reloadable = true
+
+[libraries]
+macos.debug =            "res://../rust/target/debug/libplanet_godot.dylib"
+macos.release =          "res://../rust/target/release/libplanet_godot.dylib"
+macos.debug.arm64 =      "res://../rust/target/debug/libplanet_godot.dylib"
+macos.release.arm64 =    "res://../rust/target/release/libplanet_godot.dylib"
+linux.debug.x86_64 =     "res://../rust/target/debug/libplanet_godot.so"
+linux.release.x86_64 =   "res://../rust/target/release/libplanet_godot.so"
+windows.debug.x86_64 =   "res://../rust/target/debug/planet_godot.dll"
+windows.release.x86_64 = "res://../rust/target/release/planet_godot.dll"

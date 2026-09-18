@@ -82,6 +82,14 @@ Far side of the ring rising overhead through atmosphere. Needs scattering
 along the arch, atmosphere as a slab held by rim walls, no fog cheating,
 doubles. Camera up-vector from `Surface::up`; "down" is radially outward.
 
+## Runtime skeleton (done)
+
+`rust/crates/planet-core` (cube-sphere + npy + baked-cube loader, checked
+against Python) and `rust/crates/planet-godot` (`PlanetMesh` node: six
+displaced, textured faces from a baked cube, no LOD). `godot/scenes/main.tscn`
+shows the baked Earth with an orbit camera. Single-precision Godot for now;
+the double-precision build comes with the floating-origin work in phase 2.
+
 ## Phases
 
 1. Data pipeline + colourisation/land-cover net. Deliverable: procedural

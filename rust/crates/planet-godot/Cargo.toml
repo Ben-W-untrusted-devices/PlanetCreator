@@ -1,0 +1,13 @@
+[package]
+name = "planet-godot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GDExtension exposing PlanetCreator nodes to Godot 4"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = { version = "0.5", features = ["api-4-5"] }
+planet-core = { path = "../planet-core" }

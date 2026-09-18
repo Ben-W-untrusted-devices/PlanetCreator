@@ -1,0 +1,39 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/orbit_camera.gd" id="1_cam"]
+
+[sub_resource type="ProceduralSkyMaterial" id="sky"]
+sky_top_color = Color(0.01, 0.01, 0.02, 1)
+sky_horizon_color = Color(0.02, 0.02, 0.04, 1)
+ground_bottom_color = Color(0.01, 0.01, 0.02, 1)
+ground_horizon_color = Color(0.02, 0.02, 0.04, 1)
+
+[sub_resource type="Sky" id="skyres"]
+sky_material = SubResource("sky")
+
+[sub_resource type="Environment" id="env"]
+background_mode = 2
+sky = SubResource("skyres")
+ambient_light_source = 2
+ambient_light_color = Color(1, 1, 1, 1)
+ambient_light_energy = 0.15
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 0, 0)
+light_energy = 1.5
+
+[node name="Planet" type="PlanetMesh" parent="."]
+cube_dir = "res://../data/cube/4096"
+mesh_res = 128
+texture_res = 1024
+radius = 1.0
+height_exaggeration = 30.0
+
+[node name="Camera" type="Camera3D" parent="."]
+script = ExtResource("1_cam")
+distance = 3.0
