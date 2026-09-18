@@ -28,45 +28,59 @@ uv run scripts/build_cube.py --res 4096         # -> data/cube/4096/<face>/<laye
 uv run scripts/preview_cube.py data/cube/4096   # PNGs in data/cube/4096/preview/
 ```
 
-Baked layers per face: `height` (m, ETOPO), `rgb` (uint8, Blue Marble),
-`tavg`/`trange`/`prec` (WorldClim annual summaries, oceans filled with the
-latitude-band mean), `land` (WorldClim valid mask), `lat`/`lon` (deg),
-`holdout` (validation regions: whole continents, see `bake.DEFAULT_HOLDOUT`).
+Baked layers per face (`data/cube/4096/<face>/`):
 
-`planetcreator.dataset.CubePatchDataset` yields random aligned patches with
-rotation/flip augmentation, deterministic per `(seed, index)`.
+- direct: `height` (m, ETOPO), `rgb` (uint8, Blue Marble), `tavg`/`trange`/`prec`
+  (WorldClim annual summaries, oceans filled with a latitude-band mean), `land`,
+  `lat`/`lon`, `holdout` (validation regions: whole continents, `bake.DEFAULT_HOLDOUT`)
+- derived from height (`planetcreator.hydro`, numba): `water` (ocean + lakes from
+  priority-flood depressions and exactly-flat DEM regions), `flowacc`
+  (log10 upstream area km², D8 routing on the global equirect grid),
+  `dist_{up,down,left,right}` (log1p km to ocean along the face axes — a
+  moisture-source / rain-shadow channel)
+- `ctx_*`: the same fields at 1/8 resolution, computed from the 8× downsampled
+  height, on a face padded by 896 px so every patch has a 2048-px context window
 
-## Colouriser (phase 1 model)
+`planetcreator.dataset.CubePatchDataset` yields aligned patches plus their
+context window, with rotation/flip augmentation that permutes the directional
+channels accordingly (tested by recomputing distances on the rotated mask).
 
-`(height, slope, ocean, lat, tavg, trange, prec) -> rgb`, a 7.9M-param UNet
-(`planetcreator.colorize`). Conditioning channels and their scales are in
-`planetcreator.features` — the runtime must build the same tensor.
+## Terrain model
+
+`planetcreator.terrain.TerrainNet`: a UNet over the patch whose bottleneck also
+sees the encoded context window (local crop + global pool). Two modes share
+one input layout (`planetcreator.features`):
+
+- `colour`: fine height + derived channels + climate → RGB
+- `joint`: coarse height + derived channels (from the context) + climate →
+  fine height (residual over the coarse) + RGB
 
 ```bash
-uv run scripts/train_colorize.py --steps 20000 --out runs/colorize   # ~0.7 s/it on an M1
-uv run scripts/colorize_face.py runs/colorize/last.pt --face ny       # full-face render vs truth
+uv run scripts/train_terrain.py --mode joint --steps 8000 --out runs/joint      # ~1 s/it on an M1
+uv run scripts/train_terrain.py --mode joint --resume runs/joint/last.pt --adv 0.05 --steps 4000 --out runs/joint_adv
+uv run scripts/render_face.py runs/joint/last.pt --face ny                     # whole-face prediction vs truth
 ```
 
-Training writes `log.csv`, `val_<step>.png` (rows: height / prediction /
-truth on held-out patches) and `last.pt` to the run directory.
+Training writes `log.csv`, `val_<step>.png` (rows: input height, predicted
+height, predicted RGB, true RGB, true height on held-out patches) and `last.pt`.
 
 ## Synthetic planets
 
 ```bash
-uv run scripts/make_planet.py --seed 3 --res 2048 --land 0.3 --humidity 1.0   # ~4 min on an M1
+uv run scripts/make_planet.py --seed 3 --checkpoint runs/joint/last.pt   # ~10 min on an M1
 ```
 
-`planetcreator.procgen` builds height (continents, shelves, mountain belts)
-and climate (latitude, altitude, continentality) fields from seamless 3D
-noise on the sphere; the colouriser paints them. Output goes to
-`data/planets/seed<N>/` in baked-cube layout, so `PlanetMesh` loads it:
+`planetcreator.procgen` builds a noise base map (continents, shelves, mountain
+belts, continental basins) and climate; `planetcreator.erosion` runs
+stream-power incision + uplift + diffusion on the equirect grid (fastscape
+scheme, numba) to carve drainage networks and valleys; the eroded map is
+box-downsampled to context scale and baked, and the joint model predicts the
+fine height + RGB per face. Output goes to `data/planets/seed<N>/` in baked-cube
+layout, so `PlanetMesh` loads it:
 
 ```bash
 /Applications/Godot.app/Contents/MacOS/Godot --path godot --resolution 1000x1000 -s scripts/capture.gd -- /tmp/p.png "$PWD/data/planets/seed3" 0.6 0.3
 ```
-
-Parameters are tuned so land climate/height distributions sit near Earth's
-(median precip ~650 mm vs 499, 15% of land above 2000 m vs 10%).
 
 ## Runtime (Godot 4 + Rust)
 
