@@ -57,21 +57,21 @@ class UNet(nn.Module):
 
 
 class PatchDiscriminator(nn.Module):
-    """Conditional PatchGAN: scores (cond, rgb) pairs on overlapping 70-ish px patches.
+    """Conditional PatchGAN (pix2pix style): scores (cond, rgb) pairs on ~70 px receptive fields.
 
-    Spectral norm keeps the hinge game stable without gradient penalties.
+    InstanceNorm rather than spectral norm: with unit-scale inputs, spectral
+    norm capped the logits so hard the discriminator barely moved off zero.
     """
 
     def __init__(self, in_ch: int, base: int = 32, layers: int = 3):
         super().__init__()
-        sn = nn.utils.spectral_norm
-        seq: list[nn.Module] = [sn(nn.Conv2d(in_ch, base, 4, 2, 1)), nn.LeakyReLU(0.2)]
+        seq: list[nn.Module] = [nn.Conv2d(in_ch, base, 4, 2, 1), nn.LeakyReLU(0.2)]
         c = base
         for i in range(1, layers):
             n = min(base * 2**i, 256)
-            seq += [sn(nn.Conv2d(c, n, 4, 2, 1)), nn.LeakyReLU(0.2)]
+            seq += [nn.Conv2d(c, n, 4, 2, 1), nn.InstanceNorm2d(n, affine=True), nn.LeakyReLU(0.2)]
             c = n
-        seq += [sn(nn.Conv2d(c, c, 4, 1, 1)), nn.LeakyReLU(0.2), sn(nn.Conv2d(c, 1, 4, 1, 1))]
+        seq += [nn.Conv2d(c, c, 4, 1, 1), nn.LeakyReLU(0.2), nn.Conv2d(c, 1, 4, 1, 1)]
         self.net = nn.Sequential(*seq)
 
     def forward(self, cond: torch.Tensor, rgb: torch.Tensor) -> torch.Tensor:
