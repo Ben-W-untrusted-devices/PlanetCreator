@@ -12,6 +12,8 @@ dependencies = [
     "requests",
     "pillow",
     "tqdm",
+    "numba>=0.67.0",
+    "scipy>=1.17.1",
 ]
 
 [project.optional-dependencies]
