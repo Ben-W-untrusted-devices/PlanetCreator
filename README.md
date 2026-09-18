@@ -57,9 +57,23 @@ cd rust && cargo build          # needs rustc >= 1.94 (rustup stable); Homebrew'
 cargo test -p planet-core       # includes the cross-check against Python cube-sphere vectors
 ```
 
-Then open `godot/` in Godot 4.5+ and run `scenes/main.tscn`: the `PlanetMesh`
-node loads `data/cube/4096` directly (baked `.npy` layers), builds six
-displaced, textured cube-sphere faces, and the camera orbits it. No LOD yet.
+Then open `godot/` in Godot 4.5+ (developed on 4.7.2 via `brew install --cask godot`)
+and run `scenes/main.tscn`: the `PlanetMesh` node loads `data/cube/4096`
+directly (baked `.npy` layers), builds six displaced, textured cube-sphere
+faces, and the camera orbits it. No LOD yet.
+
+Headless render to a PNG (used for checking without the editor):
+
+```bash
+/Applications/Godot.app/Contents/MacOS/Godot --path godot --resolution 1280x800 -s scripts/capture.gd -- /tmp/earth.png
+```
+
+Known quirk: `godot --headless --import` crashes in 4.7.2 on macOS once the
+extension is loaded (inside Godot's Metal shader converter); the windowed
+editor and headless *runs* are fine. If a fresh checkout reports
+`Cannot get class 'PlanetMesh'`, create `godot/.godot/extension_list.cfg`
+containing `res://planetcreator.gdextension` or open the project in the
+editor once.
 
 - `rust/crates/planet-core` — engine-independent: cube-sphere convention
   (mirrors `cubesphere.py`; verified by `tests/data/cubesphere_vectors.json`,
