@@ -50,11 +50,11 @@ def test_longitude_wrap_routes_across_seam():
 
 def test_lake_mask_flat_and_depression():
     h = _valley()
-    h[20:26, 10:20] = 40.0  # flat plateau region of 60 cells
+    h[18:32, 8:28] = 40.0  # exactly flat plateau (drains at its southern edge, so not a depression)
     filled = hydro.priority_flood(h, 0.0, 1e-3)
     lakes = hydro.lake_mask(h, filled, flat_min_cells=30)
-    assert lakes[12, 27]  # depression
-    assert lakes[23, 15]  # flat
+    assert lakes[12, 27]  # depression (30 m deep)
+    assert lakes[25, 18]  # flat
     assert not lakes[5, 5]
 
 

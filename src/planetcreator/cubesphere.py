@@ -79,13 +79,17 @@ def latlon_to_dir(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     return np.stack([c * np.cos(lo), c * np.sin(lo), np.sin(la)], axis=-1)
 
 
-def face_pixel_uv(n: int) -> tuple[np.ndarray, np.ndarray]:
-    """(u, v) at every pixel centre of an n x n face raster, each shape (n, n)."""
-    c = (np.arange(n, dtype=np.float64) + 0.5) / n * 2 - 1
+def face_pixel_uv(n: int, pad: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """(u, v) at every pixel centre of an n x n face raster, each shape (n, n).
+
+    With ``pad`` the raster is (n + 2 pad)^2 and extends beyond the face (|u| > 1); the
+    tangent warp continues smoothly there, so the extra pixels land on neighbouring faces.
+    """
+    c = (np.arange(-pad, n + pad, dtype=np.float64) + 0.5) / n * 2 - 1
     u, v = np.meshgrid(c, -c)  # rows run from +v (top) to -v
     return u, v
 
 
-def face_pixel_latlon(face: int, n: int) -> tuple[np.ndarray, np.ndarray]:
-    u, v = face_pixel_uv(n)
+def face_pixel_latlon(face: int, n: int, pad: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    u, v = face_pixel_uv(n, pad)
     return dir_to_latlon(face_uv_to_dir(np.full_like(u, face, dtype=np.intp), u, v))

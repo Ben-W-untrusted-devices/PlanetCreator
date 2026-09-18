@@ -195,12 +195,15 @@ def lake_mask(
     height: np.ndarray,
     filled: np.ndarray,
     sea_level: float = 0.0,
-    min_fill_m: float = 3.0,
-    flat_tol_m: float = 0.5,
+    min_fill_m: float = 10.0,
+    flat_tol_m: float = 0.05,
     flat_min_cells: int = 40,
 ) -> np.ndarray:
-    """Inland water: cells inside filled depressions, or in sizeable dead-flat regions
-    (lake surfaces in a DEM are flat but not necessarily depressions)."""
+    """Inland water: cells inside filled depressions, or in sizeable dead-flat regions.
+
+    Lake surfaces in a DEM are *exactly* flat but not necessarily depressions; the
+    tolerance must stay well below floodplain gradients (the Amazon varies by decimetres
+    over a few km) or lowlands get tagged as lakes."""
     land = height > sea_level
     lakes = land & (filled - height > min_fill_m)
     rng = ndimage.maximum_filter(height, 5) - ndimage.minimum_filter(height, 5)
@@ -234,9 +237,11 @@ def _dist_along_rows(water, cap, wrap):
     return out
 
 
-def directional_distance(water: np.ndarray, spacing_km: np.ndarray | float, cap_km: float, axis: int, sign: int) -> np.ndarray:
+def directional_distance(
+    water: np.ndarray, spacing_km: np.ndarray | float, cap_km: float, axis: int, sign: int, wrap: bool = True
+) -> np.ndarray:
     """Distance (km) from each cell to the nearest water cell looking along ``axis`` in
-    direction ``sign``; wraps along axis 1, clamps along axis 0; capped at ``cap_km``.
+    direction ``sign``; wraps along axis 1 if ``wrap``, clamps along axis 0; capped at ``cap_km``.
 
     ``spacing_km`` is a scalar or a per-row array (E/W spacing shrinks with latitude).
     Distances are measured in cells then scaled by the local spacing.
@@ -249,7 +254,7 @@ def directional_distance(water: np.ndarray, spacing_km: np.ndarray | float, cap_
         d = (d[:, ::-1] if sign < 0 else d).T
     else:
         src = np.ascontiguousarray(w[:, ::-1] if sign < 0 else w)
-        d = _dist_along_rows(src, big, True)
+        d = _dist_along_rows(src, big, wrap)
         d = d[:, ::-1] if sign < 0 else d
     sp = np.asarray(spacing_km, dtype=np.float32)
     if sp.ndim == 1:

@@ -26,7 +26,7 @@ def main() -> None:
     clim |= load_worldclim(raw_path(WORLDCLIM_PREC, args.data_dir), "prec")
     layers.update({k: clim[k] for k in ("tavg", "trange", "prec", "land")})
 
-    bake(BakeSpec(args.res, layers, nearest={"land"}), out, progress=print)
+    bake(BakeSpec(args.res, layers, nearest={"land"}, flow_downsample=2), out, progress=print)
     print("wrote", out)
 
 
