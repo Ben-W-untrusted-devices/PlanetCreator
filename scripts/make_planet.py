@@ -36,6 +36,8 @@ def main() -> None:
     ap.add_argument("--res", type=int, default=4096, help="face resolution of the output cube")
     ap.add_argument("--eq-width", type=int, default=4096, help="equirect width for the base map / erosion")
     ap.add_argument("--iters", type=int, default=200, help="erosion steps")
+    ap.add_argument("--smooth", type=float, default=1.5,
+                    help="Gaussian sigma (erosion px) applied before downsampling: kills D8 grid hatching")
     ap.add_argument("--checkpoint", type=Path, default=Path("runs/joint/last.pt"))
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--land", type=float, default=0.3)
@@ -45,6 +47,7 @@ def main() -> None:
     ap.add_argument("--mountains", type=float, default=6000.0)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--no-model", action="store_true", help="stop after baking the coarse planet")
+    ap.add_argument("--reuse", action="store_true", help="skip generation; run the model on an existing bake")
     args = ap.parse_args()
     out = args.out or Path("data/planets") / f"seed{args.seed}"
     t0 = time.time()
@@ -55,6 +58,10 @@ def main() -> None:
     )
     planet = Planet(params)
     H, W = args.eq_width // 2, args.eq_width
+    if args.reuse and (out / "meta.json").exists():
+        print("reusing bake in", out, flush=True)
+        infer_faces(args, out, t0)
+        return
     print("base map", flush=True)
     g = generate_equirect(planet, H, W)
     print(f"erosion ({args.iters} steps)", flush=True)
@@ -64,14 +71,30 @@ def main() -> None:
     clim = climate_equirect(planet, g["dirs"], height)
 
     # The eroded map is the *coarse* truth (context scale); the model invents the fine scale.
+    # Earth's coarse map is a box-average of real terrain, so it is smooth at the pixel level;
+    # D8 erosion output is not (single-pixel valleys in 8 directions), and the model would
+    # sharpen that hatching. Blur it away before downsampling.
+    if args.smooth > 0:
+        from scipy.ndimage import gaussian_filter
+
+        ocean = height <= 0
+        height = gaussian_filter(height, args.smooth, mode=("nearest", "wrap")).astype(np.float32)
+        height[ocean & (height > 0)] = -1.0  # keep coastlines where they were
     coarse = box_downsample(height, max(1, W // 2048))
     layers = {k: EquirectGrid(v) for k, v in clim.items()}
     print("bake", flush=True)
     bake(BakeSpec(args.res, layers, coarse_height=EquirectGrid(coarse), holdout=()), out)
     np.save(out / "coarse_height_equirect.npy", coarse)
+    meta = load_meta(out)
+    meta["planet"] = asdict(params)
+    meta["erosion"] = {"iters": args.iters, "eq_width": W}
+    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    infer_faces(args, out, t0)
+
+
+def infer_faces(args, out: Path, t0: float) -> None:
     (out / "preview").mkdir(exist_ok=True)
     step = max(1, args.res // 1024)
-
     model = None if args.no_model else TerrainNet.load(args.checkpoint)[0]
     device = pick_device(args.device)
     meta = load_meta(out)
@@ -97,8 +120,6 @@ def main() -> None:
 
     first = out / FACE_NAMES[0]
     meta["layers"] = {p.stem: info(p) for p in sorted(first.glob("*.npy")) if not p.stem.startswith("ctx_")}
-    meta["planet"] = asdict(params)
-    meta["erosion"] = {"iters": args.iters, "eq_width": W}
     meta["checkpoint"] = None if model is None else str(args.checkpoint)
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     print("wrote", out)
