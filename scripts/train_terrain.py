@@ -160,6 +160,7 @@ def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, dev
             log.flush()
             sample_grid(model, val_batch, device, args.out / f"val_{step:06d}.png")
             model.save(args.out / "last.pt", step=step, disc=disc.state_dict() if disc else None)
+            model.save(args.out / f"step_{step:06d}.pt", step=step)  # GAN runs oscillate; keep every checkpoint
             print(f"  val rgb {val['rgb']:.4f} height {val['height_m']:.0f}m  saved", flush=True)
 
 
