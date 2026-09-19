@@ -18,8 +18,8 @@ def test_priority_flood_removes_pits_and_keeps_drainage():
     assert np.all(f >= h)
     assert (f - h)[12, 27] > 20  # pit filled
     assert np.allclose(f[h > 0] - h[h > 0], 0, atol=1e-6) or True
-    rec = hydro.d8_receivers(f, 0.0)
     H, W = h.shape
+    rec = hydro.d8_receivers(f, 0.0, hydro.row_cos(H, 0.15))
     land = (h > 0).ravel()
     assert np.all(rec[land] != np.arange(H * W)[land])  # every land cell has a receiver
 

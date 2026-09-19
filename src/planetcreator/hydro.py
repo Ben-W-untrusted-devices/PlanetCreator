@@ -107,8 +107,27 @@ def priority_flood(h, sea_level, eps):
 
 
 @njit(cache=True)
-def d8_receivers(filled, sea_level):
-    """Steepest-descent receiver (flat index) per cell; sinks and ocean point to themselves."""
+def row_cos(H, min_cos):
+    """cos(latitude) per row of an equirect grid, floored so polar cells stay well-posed."""
+    out = np.empty(H)
+    for i in range(H):
+        lat = (90.0 - (i + 0.5) * 180.0 / H) * np.pi / 180.0
+        out[i] = max(np.cos(lat), min_cos)
+    return out
+
+
+@njit(cache=True)
+def _step_len(k, cos_i):
+    """Distance to neighbour k in units of the row spacing, for a row with E-W scale cos_i."""
+    di = abs(_DI[k])
+    dj = abs(_DJ[k]) * cos_i
+    return np.sqrt(di * di + dj * dj)
+
+
+@njit(cache=True)
+def d8_receivers(filled, sea_level, cosr):
+    """Steepest-descent receiver (flat index) per cell; sinks and ocean point to themselves.
+    ``cosr`` is the per-row E-W spacing factor (see :func:`row_cos`)."""
     H, W = filled.shape
     rec = np.empty(H * W, dtype=np.int64)
     for i in range(H):
@@ -123,10 +142,62 @@ def d8_receivers(filled, sea_level):
                 nj = (j + _DJ[k]) % W
                 if ni < 0 or ni >= H:
                     continue
-                s = (filled[i, j] - filled[ni, nj]) / _DIST[k]
+                s = (filled[i, j] - filled[ni, nj]) / _step_len(k, cosr[i])
                 if s > best:
                     best = s
                     rec[c] = ni * W + nj
+    return rec
+
+
+@njit(cache=True)
+def _hash01(a, b):
+    """Cheap deterministic uniform in [0, 1) from two integers."""
+    x = (a * 73856093) ^ (b * 19349663)
+    x = (x ^ (x >> 13)) * 1274126177
+    x = x ^ (x >> 16)
+    return (x & 0xFFFFFF) / 16777216.0
+
+
+@njit(cache=True)
+def d8_receivers_stochastic(filled, sea_level, power, salt, cosr):
+    """Like :func:`d8_receivers` but the receiver is drawn among all downslope neighbours
+    with probability proportional to slope**power. Breaks the straight parallel channels
+    deterministic D8 carves on smooth slopes; ``salt`` changes the draw per call."""
+    H, W = filled.shape
+    rec = np.empty(H * W, dtype=np.int64)
+    slopes = np.empty(8)
+    targets = np.empty(8, dtype=np.int64)
+    for i in range(H):
+        for j in range(W):
+            c = i * W + j
+            rec[c] = c
+            if filled[i, j] <= sea_level:
+                continue
+            total = 0.0
+            n = 0
+            for k in range(8):
+                ni = i + _DI[k]
+                nj = (j + _DJ[k]) % W
+                if ni < 0 or ni >= H:
+                    continue
+                sl = (filled[i, j] - filled[ni, nj]) / _step_len(k, cosr[i])
+                if sl > 0:
+                    w = sl**power
+                    slopes[n] = w
+                    targets[n] = ni * W + nj
+                    total += w
+                    n += 1
+            if n == 0:
+                continue
+            r = _hash01(c, salt) * total
+            acc = 0.0
+            for k in range(n):
+                acc += slopes[k]
+                if r < acc:
+                    rec[c] = targets[k]
+                    break
+            else:
+                rec[c] = targets[n - 1]
     return rec
 
 
@@ -181,11 +252,11 @@ def cell_area_km2(H: int, W: int) -> np.ndarray:
     return np.repeat(row, W).astype(np.float64)
 
 
-def route(height: np.ndarray, sea_level: float = 0.0, eps: float = 1e-3):
+def route(height: np.ndarray, sea_level: float = 0.0, eps: float = 1e-3, min_cos: float = 0.15):
     """Fill, route and accumulate. Returns (filled, receivers, order, accumulation_km2)."""
     h = np.ascontiguousarray(height, dtype=np.float64)
     filled = priority_flood(h, sea_level, eps)
-    rec = d8_receivers(filled, sea_level)
+    rec = d8_receivers(filled, sea_level, row_cos(h.shape[0], min_cos))
     order = flow_order(rec)
     acc = accumulate(rec, order, cell_area_km2(*h.shape))
     return filled, rec, order, acc.reshape(h.shape)

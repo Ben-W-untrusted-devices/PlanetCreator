@@ -154,7 +154,9 @@ def uplift_field(planet: Planet, d: np.ndarray, base_height: np.ndarray, max_mm_
     p = planet.p
     land = base_height > 0
     rel = np.clip((base_height - 0.6 * p.land_height_m) / p.mountain_height_m, 0, 1)
-    return np.where(land, max_mm_yr * (0.04 + 0.96 * rel**1.2), 0.0).astype(np.float64)
+    # Lowlands get (almost) no uplift: with nothing to cut into, erosion planes them smooth
+    # at the coarse scale, like real cratons and depositional plains.
+    return np.where(land, max_mm_yr * (0.003 + 0.997 * rel**1.2), 0.0).astype(np.float64)
 
 
 def climate_equirect(planet: Planet, d: np.ndarray, height: np.ndarray, rows_per_chunk: int = 256) -> dict[str, np.ndarray]:

@@ -36,8 +36,8 @@ def main() -> None:
     ap.add_argument("--res", type=int, default=4096, help="face resolution of the output cube")
     ap.add_argument("--eq-width", type=int, default=4096, help="equirect width for the base map / erosion")
     ap.add_argument("--iters", type=int, default=200, help="erosion steps")
-    ap.add_argument("--smooth", type=float, default=1.5,
-                    help="Gaussian sigma (erosion px) applied before downsampling: kills D8 grid hatching")
+    ap.add_argument("--smooth", type=float, nargs=2, default=(5.0, 1.5), metavar=("LOWLAND", "MOUNTAIN"),
+                    help="Gaussian sigmas (erosion px) blended by elevation before downsampling")
     ap.add_argument("--checkpoint", type=Path, default=Path("runs/joint/last.pt"))
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--land", type=float, default=0.3)
@@ -71,15 +71,17 @@ def main() -> None:
     clim = climate_equirect(planet, g["dirs"], height)
 
     # The eroded map is the *coarse* truth (context scale); the model invents the fine scale.
-    # Earth's coarse map is a box-average of real terrain, so it is smooth at the pixel level;
-    # D8 erosion output is not (single-pixel valleys in 8 directions), and the model would
-    # sharpen that hatching. Blur it away before downsampling.
-    if args.smooth > 0:
+    # Its roughness must match Earth's coarse map (smooth lowlands, rugged belts; see
+    # docs/approaches.md) or the model amplifies grid-scale dissection into hatching.
+    # Elevation-blended Gaussian smoothing gets the gradient statistics into Earth's range.
+    if max(args.smooth) > 0:
         from scipy.ndimage import gaussian_filter
 
         ocean = height <= 0
-        height = gaussian_filter(height, args.smooth, mode=("nearest", "wrap")).astype(np.float32)
-        height[ocean & (height > 0)] = -1.0  # keep coastlines where they were
+        w = np.clip(height / 1500.0, 0, 1)
+        low = gaussian_filter(height, args.smooth[0], mode=("nearest", "wrap"))
+        mtn = gaussian_filter(height, args.smooth[1], mode=("nearest", "wrap"))
+        height = np.where(ocean, height, np.maximum((1 - w) * low + w * mtn, 0.5)).astype(np.float32)
     coarse = box_downsample(height, max(1, W // 2048))
     layers = {k: EquirectGrid(v) for k, v in clim.items()}
     print("bake", flush=True)
