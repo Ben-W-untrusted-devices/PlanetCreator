@@ -9,11 +9,12 @@ build/
 .ruff_cache/
 .mypy_cache/
 
-# Data & model artifacts (large; fetched by scripts, never committed)
-data/
-checkpoints/
-runs/
-outputs/
+# Data & model artifacts (large; fetched by scripts, never committed).
+# Anchored to the repo root so test fixture directories elsewhere are not swallowed.
+/data/
+/checkpoints/
+/runs/
+/outputs/
 *.tif
 *.tiff
 *.nc
@@ -22,6 +23,8 @@ outputs/
 *.pt
 *.pth
 *.safetensors
+# Small test fixtures are the exception
+!rust/crates/planet-core/tests/data/*.npy
 
 # OS / editors
 .DS_Store
