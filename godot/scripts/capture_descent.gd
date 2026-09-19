@@ -21,6 +21,8 @@ func _initialize() -> void:
 	cam.pitch = float(a[6])
 	if a.size() > 7:
 		_wait = int(a[7])
+	if a.size() > 8:
+		scene.get_node("Atmosphere").debug_mode = int(a[8])
 	scene.get_node("HUD").visible = false
 	root.add_child(scene)
 

@@ -90,9 +90,20 @@ cargo test -p planet-core       # includes the cross-check against Python cube-s
 ```
 
 Then open `godot/` in Godot 4.5+ (developed on 4.7.2 via `brew install --cask godot`)
-and run `scenes/main.tscn`: the `PlanetMesh` node loads `data/cube/4096`
-directly (baked `.npy` layers), builds six displaced, textured cube-sphere
-faces, and the camera orbits it. No LOD yet.
+and press F5. The main scene is `scenes/descent.tscn`: a `PlanetLod` node
+(cube-sphere quadtree, floating origin, fractal detail below the baked data,
+padded seamless face textures), a single-scattering atmosphere post-process
+(`shaders/atmosphere.gdshader`, sky + aerial perspective from one shader), a
+fly camera and a HUD. It starts 15,000 km above a generated planet
+(`data/planets/seed3`); set the Planet node's `cube_dir` to
+`res://../data/cube/4096` for Earth.
+
+Controls: right-drag or Tab to look, WASD to move, Q/E down/up, Shift x10,
+Ctrl /10, Esc releases the mouse. Speed scales with altitude.
+
+`scenes/main.tscn` is the older orbit view (`PlanetMesh`, no LOD).
+
+Scripted screenshots: `scripts/capture_descent.gd -- out.png cube_dir lat lon alt_m yaw pitch [frames] [debug_mode]`.
 
 Headless render to a PNG (used for checking without the editor):
 

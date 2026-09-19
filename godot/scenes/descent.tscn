@@ -1,7 +1,16 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/fly_camera.gd" id="1_cam"]
 [ext_resource type="Script" path="res://scripts/hud.gd" id="2_hud"]
+[ext_resource type="Script" path="res://scripts/atmosphere.gd" id="3_atm"]
+[ext_resource type="Shader" path="res://shaders/atmosphere.gdshader" id="4_shd"]
+
+[sub_resource type="ShaderMaterial" id="atm_mat"]
+render_priority = 100
+shader = ExtResource("4_shd")
+
+[sub_resource type="QuadMesh" id="atm_quad"]
+size = Vector2(2, 2)
 
 [sub_resource type="ProceduralSkyMaterial" id="sky"]
 sky_top_color = Color(0.005, 0.005, 0.01, 1)
@@ -19,6 +28,9 @@ sky = SubResource("skyres")
 ambient_light_source = 2
 ambient_light_color = Color(0.6, 0.7, 1, 1)
 ambient_light_energy = 0.25
+tonemap_mode = 3
+tonemap_exposure = 1.4
+tonemap_white = 4.0
 
 [node name="Descent" type="Node3D"]
 
@@ -27,14 +39,21 @@ environment = SubResource("env")
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 0, 0)
-light_energy = 1.3
+light_energy = 3.0
 shadow_enabled = false
 
 [node name="Planet" type="PlanetLod" parent="."]
 cube_dir = "res://../data/planets/seed3"
-start_lat = 20.0
-start_lon = 10.0
+start_lat = -19.3
+start_lon = 3.87
 start_altitude_m = 15000000.0
+
+[node name="Atmosphere" type="MeshInstance3D" parent="."]
+mesh = SubResource("atm_quad")
+material_override = SubResource("atm_mat")
+script = ExtResource("3_atm")
+planet_path = NodePath("../Planet")
+sun_path = NodePath("../Sun")
 
 [node name="Camera" type="Camera3D" parent="."]
 script = ExtResource("1_cam")
