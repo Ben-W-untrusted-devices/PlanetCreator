@@ -36,7 +36,7 @@ def main() -> None:
     ap.add_argument("--res", type=int, default=4096, help="face resolution of the output cube")
     ap.add_argument("--eq-width", type=int, default=4096, help="equirect width for the base map / erosion")
     ap.add_argument("--iters", type=int, default=200, help="erosion steps")
-    ap.add_argument("--smooth", type=float, nargs=2, default=(5.0, 1.5), metavar=("LOWLAND", "MOUNTAIN"),
+    ap.add_argument("--smooth", type=float, nargs=2, default=(6.0, 3.0), metavar=("LOWLAND", "MOUNTAIN"),
                     help="Gaussian sigmas (erosion px) blended by elevation before downsampling")
     ap.add_argument("--checkpoint", type=Path, default=Path("runs/joint/last.pt"))
     ap.add_argument("--out", type=Path, default=None)
@@ -66,7 +66,7 @@ def main() -> None:
     g = generate_equirect(planet, H, W)
     print(f"erosion ({args.iters} steps)", flush=True)
     height, _acc = erode(g["height"].astype(np.float64), uplift_field(planet, g["dirs"], g["height"], 1.2),
-                         ErosionParams(iters=args.iters), progress=lambda i, n: print(f"  {i}/{n}", flush=True) if i % 50 == 0 else None)
+                         ErosionParams(iters=args.iters, routing_power=1.0, k_variation=0.4), progress=lambda i, n: print(f"  {i}/{n}", flush=True) if i % 50 == 0 else None)
     print("climate", flush=True)
     clim = climate_equirect(planet, g["dirs"], height)
 
