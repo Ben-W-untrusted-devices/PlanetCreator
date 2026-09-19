@@ -5,4 +5,7 @@
 
 pub mod cube;
 pub mod cubesphere;
+pub mod dvec;
+pub mod heightfield;
 pub mod npy;
+pub mod quadtree;

@@ -4,6 +4,7 @@
 
 use godot::prelude::*;
 
+mod planet_lod;
 mod planet_mesh;
 
 struct PlanetCreatorExtension;
