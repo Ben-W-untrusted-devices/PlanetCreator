@@ -4,7 +4,8 @@ extends Camera3D
 ## in double precision and moves the world around us.
 ##
 ## Controls: right-drag (or Tab to toggle capture) to look, WASD to move, Q/E down/up,
-## Shift x10, Ctrl /10. Speed scales with altitude. Escape releases the mouse.
+## Shift x10, Ctrl /10, F to face the planet. Speed scales with altitude. Escape
+## releases the mouse.
 
 @export var planet_path: NodePath = ^"../Planet"
 @export var mouse_sensitivity := 0.003
@@ -21,7 +22,15 @@ var _planet: Node
 func _ready() -> void:
 	_planet = get_node(planet_path)
 	position = Vector3.ZERO
+	face_planet()
 	_update_clip()
+
+
+## Aim at the planet: straight down when high up (the planet is below the horizon from
+## orbit), level when near the ground.
+func face_planet() -> void:
+	var altitude: float = _planet.get_altitude()
+	pitch = -1.5 if altitude > 50000.0 else -0.15
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -32,6 +41,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_capture(not _captured)
 		elif event.keycode == KEY_ESCAPE:
 			_set_capture(false)
+		elif event.keycode == KEY_F:
+			face_planet()
 	elif event is InputEventMouseMotion and _captured:
 		yaw -= event.relative.x * mouse_sensitivity
 		pitch = clampf(pitch - event.relative.y * mouse_sensitivity, -1.55, 1.55)
