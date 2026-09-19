@@ -15,13 +15,16 @@ Plus the coarse context window (``ctx_*`` layers) in both modes.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .bake import CTX_LAYERS, DIST_NAMES
 
-# Channel order of the per-pixel conditioning tensor.
-COND_CHANNELS = ("height", "slope", "ocean", "water", "flowacc", *DIST_NAMES, "lat", "tavg", "trange", "prec")
+# Channel order of the per-pixel conditioning tensor. ``noise`` is a deterministic
+# per-pixel white-noise field keyed on the pixel's global position (see
+# :func:`noise_field`): the model's source of detail entropy, reproducible per tile.
+COND_CHANNELS = ("height", "slope", "ocean", "water", "flowacc", *DIST_NAMES, "lat", "tavg", "trange", "prec", "noise")
 CTX_CHANNELS = CTX_LAYERS  # height, water, flowacc, dist x4, tavg, trange, prec, lat
 
 HEIGHT_SCALE = 4000.0  # m
@@ -74,16 +77,37 @@ def build_ctx(batch: dict[str, torch.Tensor]) -> torch.Tensor:
     return torch.cat([_norm(name, batch[f"ctx_{name}"]) for name in CTX_CHANNELS], dim=1)
 
 
+def noise_field(face: int, i0: int, j0: int, size: int, seed: int = 0) -> np.ndarray:
+    """Deterministic white noise in [-1, 1] for the ``size x size`` window whose top-left
+    fine pixel is (i0, j0) on ``face``: the same pixel always gets the same value, so
+    overlapping tiles agree and a quadtree node refines identically every time."""
+    m = np.uint64(0xFFFFFFFFFFFFFFFF)
+    ii = np.arange(i0, i0 + size, dtype=np.uint64)[:, None]
+    jj = np.arange(j0, j0 + size, dtype=np.uint64)[None, :]
+    with np.errstate(over="ignore"):
+        h = (ii * np.uint64(0x9E3779B97F4A7C15)) ^ (jj * np.uint64(0xBF58476D1CE4E5B9))
+        salt = (np.uint64(face + 1) * np.uint64(0x94D049BB133111EB)) ^ (np.uint64(seed) * np.uint64(0x2545F4914F6CDD1D))
+        h = (h ^ salt) & m
+        h ^= h >> np.uint64(31)
+        h = (h * np.uint64(0x7FB5D329728EA185)) & m
+        h ^= h >> np.uint64(27)
+    return ((h >> np.uint64(11)).astype(np.float64) / float(1 << 53) * 2.0 - 1.0).astype(np.float32)
+
+
 def coarse_from_ctx(batch: dict[str, torch.Tensor], patch: int, pad: int, factor: int) -> dict[str, torch.Tensor]:
     """The centre of the context window (the patch's own footprint) upsampled to patch
-    resolution, as raw-unit layers: what a generator knows about a patch at coarse scale."""
+    resolution, as raw-unit layers: what a generator knows about a patch at coarse scale.
+
+    Everything is upsampled bilinearly (the water mask becomes a soft coverage ramp);
+    nearest upsampling gave the model 8-px staircases to reproduce. ``height_nearest``
+    is also returned for the mean-preserving residual (see ``TerrainNet.forward``)."""
     c0, cs = pad // factor, patch // factor
     out = {}
     for name in ("height", "water", "flowacc", *DIST_NAMES):
         crop = batch[f"ctx_{name}"][..., c0 : c0 + cs, c0 : c0 + cs].float()
-        mode = "nearest" if name == "water" else "bilinear"
-        kw = {} if mode == "nearest" else {"align_corners": False}
-        out[name] = F.interpolate(crop, scale_factor=factor, mode=mode, **kw)
+        out[name] = F.interpolate(crop, scale_factor=factor, mode="bilinear", align_corners=False)
+    crop = batch["ctx_height"][..., c0 : c0 + cs, c0 : c0 + cs].float()
+    out["height_nearest"] = F.interpolate(crop, scale_factor=factor, mode="nearest")
     return out
 
 
@@ -117,5 +141,6 @@ def build_cond(
         _norm("tavg", batch["tavg"]),
         _norm("trange", batch["trange"]),
         _norm("prec", batch["prec"]),
+        batch["noise"],
     ]
     return torch.cat(chans, dim=1)

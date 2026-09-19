@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 
 from .bake import CTX_LAYERS, DIST_NAMES, load_meta
 from .cubesphere import FACE_NAMES
+from .features import noise_field
 
 FINE_LAYERS = ("height", "rgb", "lat", "tavg", "trange", "prec", "water", "flowacc", *DIST_NAMES)
 
@@ -112,6 +113,7 @@ class CubePatchDataset(Dataset):
         """Un-augmented layers for a patch at (face, i, j)."""
         p = self.spec.patch
         out = {name: np.asarray(self._layer(face, name)[i : i + p, j : j + p]) for name in self.spec.layers}
+        out["noise"] = noise_field(FACE_NAMES.index(face), i, j, p)
         if self.spec.ctx:
             ci, cj, s = i // self.f, j // self.f, self.ctx_size
             for name in CTX_LAYERS:

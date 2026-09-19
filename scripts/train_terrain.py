@@ -25,8 +25,8 @@ def sample_grid(model, batch, device, path: Path, n: int = 8) -> None:
     model.eval()
     with torch.no_grad():
         b = to_dev({k: v[:n] for k, v in batch.items()}, device)
-        cond, ctx = model.inputs(b)
-        out = {k: v.cpu() for k, v in model(cond, ctx).items()}
+        out, cond, _ = model.predict(b)
+        out = {k: v.cpu() for k, v in out.items()}
         hin = cond[:, 0:1].cpu()
     model.train()
 
@@ -50,8 +50,7 @@ def evaluate(model, loader, device) -> dict[str, float]:
     n = 0
     for b in loader:
         b = to_dev(b, device)
-        cond, ctx = model.inputs(b)
-        out = model(cond, ctx)
+        out, _cond, _ctx = model.predict(b)
         t = model.target(b)
         k = len(b["rgb"])
         tot["rgb"] += torch.nn.functional.l1_loss(out["rgb"], t["rgb"]).item() * k
@@ -133,9 +132,8 @@ def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, dev
         if step > args.steps:
             break
         b = to_dev(b, device)
-        cond, ctx = model.inputs(b)
         target = model.target(b)
-        out = model(cond, ctx)
+        out, cond, _ctx = model.predict(b)
         d_val = float("nan")
         if disc is not None:
             d_loss = model.d_loss(disc(cond, model.stack_out(target)), disc(cond, model.stack_out(out).detach()))

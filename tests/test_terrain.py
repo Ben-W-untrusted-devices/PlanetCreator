@@ -7,6 +7,7 @@ from planetcreator.features import (
     HEIGHT_SCALE,
     build_cond,
     build_ctx,
+    noise_field,
     px_km_for_face,
 )
 from planetcreator.terrain import TerrainConfig, TerrainNet, infer_face
@@ -29,6 +30,7 @@ def _batch(b=2):
     }
     for d in DIST_NAMES:
         out[d] = torch.rand(b, 1, P, P, generator=g) * 8
+    out["noise"] = torch.rand(b, 1, P, P, generator=g) * 2 - 1
     for name in CTX_LAYERS:
         out[f"ctx_{name}"] = torch.rand(b, 1, cs, cs, generator=g) * (4000 if name == "height" else 1)
     return out
@@ -62,16 +64,19 @@ def test_forward_and_train_step_each_mode():
         m = TerrainNet(_cfg(mode, adv=0.1))
         d = m.make_discriminator()
         b = _batch()
-        cond, ctx = m.inputs(b)
-        out = m(cond, ctx)
+        out, cond, _ctx = m.predict(b)
         assert out["rgb"].shape == (2, 3, P, P)
         if mode == "joint":
             assert out["height"].shape == (2, 1, P, P)
+            # mean-preserving: every 8x8 block of the output averages to the coarse texel
+            coarse = b["ctx_height"][..., PAD // F : PAD // F + P // F, PAD // F : PAD // F + P // F] / HEIGHT_SCALE
+            block = torch.nn.functional.avg_pool2d(out["height"], F)
+            assert torch.allclose(block, coarse, atol=1e-4)
         target = m.target(b)
         opt = torch.optim.Adam(m.parameters(), 1e-2)
         losses = []
         for _ in range(8):
-            out = m(cond, ctx)
+            out, cond, _ctx = m.predict(b)
             logits = d(cond, m.stack_out(out))
             loss, parts = m.loss(out, target, logits)
             opt.zero_grad()
@@ -97,10 +102,20 @@ def test_infer_face_matches_direct(tmp_path):
     b = {k: torch.from_numpy(v[:P, :P])[None, None] for k, v in fine.items()}
     cs = (P + 2 * PAD) // F
     b.update({f"ctx_{k}": torch.from_numpy(v[:cs, :cs])[None, None] for k, v in ctx.items()})
-    cond, c = m.inputs(b)
+    b["noise"] = torch.from_numpy(noise_field(0, 0, 0, P))[None, None]
     with torch.no_grad():
-        direct = m(cond, c)["height"][0, 0].numpy() * HEIGHT_SCALE
+        direct = m.predict(b)[0]["height"][0, 0].numpy() * HEIGHT_SCALE
     assert np.abs(res["height"][:P // 2, :P // 2] - direct[:P // 2, :P // 2]).mean() < 5.0
     m.save(tmp_path / "m.pt", step=3)
     m2, ck = TerrainNet.load(tmp_path / "m.pt")
     assert ck["step"] == 3 and m2.cfg == m.cfg
+
+
+def test_noise_field_is_deterministic_and_position_keyed():
+    a = noise_field(2, 100, 200, 16)
+    b = noise_field(2, 100, 200, 16)
+    assert np.array_equal(a, b) and a.min() >= -1 and a.max() <= 1 and abs(a.mean()) < 0.2
+    # a window shifted by (0, 4) shares its overlapping pixels exactly
+    c = noise_field(2, 100, 204, 16)
+    assert np.array_equal(a[:, 4:], c[:, :12])
+    assert not np.array_equal(noise_field(3, 100, 200, 16), a)

@@ -19,6 +19,7 @@ from .features import (
     build_cond,
     build_ctx,
     coarse_from_ctx,
+    noise_field,
 )
 from .models import ContextUNet, PatchDiscriminator, hinge_d_loss, hinge_g_loss
 
@@ -51,16 +52,42 @@ class TerrainNet(nn.Module):
         cond = build_cond(batch, self.cfg.mode, px_km=px_km, ctx_pad=self.cfg.ctx_pad, ctx_factor=self.cfg.ctx_factor)
         return cond, build_ctx(batch)
 
-    def forward(self, cond: torch.Tensor, ctx: torch.Tensor) -> dict[str, torch.Tensor]:
+    def coarse_nearest(self, batch: dict[str, torch.Tensor]) -> torch.Tensor | None:
+        """Normalised nearest-upsampled coarse height for the mean-preserving residual."""
+        if self.cfg.mode != "joint":
+            return None
+        up = coarse_from_ctx(batch, batch["lat"].shape[-1], self.cfg.ctx_pad, self.cfg.ctx_factor)
+        return up["height_nearest"] / HEIGHT_SCALE
+
+    def predict(self, batch: dict[str, torch.Tensor], px_km: float = TRAIN_PX_KM) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+        """Convenience: inputs + forward with the mean-preserving residual. Returns (out, cond, ctx)."""
+        cond, ctx = self.inputs(batch, px_km)
+        return self(cond, ctx, self.coarse_nearest(batch)), cond, ctx
+
+    def forward(self, cond: torch.Tensor, ctx: torch.Tensor, coarse_nearest: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         """Returns ``rgb`` in [0, 1] and, in joint mode, ``height`` normalised (/HEIGHT_SCALE).
 
-        The height head predicts a residual over the coarse height (channel 0 of ``cond``).
+        The height head predicts a residual over the bilinearly upsampled coarse height
+        (channel 0 of ``cond``). The residual is made **mean-preserving**: every
+        ``ctx_factor``-sized block of the output averages exactly to the coarse texel
+        (``coarse_nearest``, normalised), so the coarse level is always the block mean of
+        the fine level and LOD transitions do not pop.
         """
         y = self.net(cond, ctx, self.cfg.ctx_pad, self.cfg.ctx_factor)
         out = {"rgb": torch.sigmoid(y[:, :3])}
         if self.cfg.mode == "joint":
-            out["height"] = cond[:, :1] + y[:, 3:4]
+            f = self.cfg.ctx_factor
+            up = cond[:, :1]
+            r = y[:, 3:4]
+            r = r - self._block_mean(r, f)
+            if coarse_nearest is not None:
+                r = r + coarse_nearest - self._block_mean(up, f)
+            out["height"] = up + r
         return out
+
+    @staticmethod
+    def _block_mean(x: torch.Tensor, f: int) -> torch.Tensor:
+        return F.interpolate(F.avg_pool2d(x, f), scale_factor=f, mode="nearest")
 
     def target(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         t = {"rgb": batch["rgb"]}
@@ -128,12 +155,18 @@ def infer_face(
     batch: int = 8,
     device: str = "cpu",
     px_km: float = TRAIN_PX_KM,
+    face: int = 0,
+    seed: int = 0,
+    origin_i: int = 0,
+    origin_j: int = 0,
 ) -> dict[str, np.ndarray]:
     """Run the model over a whole face with overlapping, Hann-blended tiles.
 
     ``fine`` holds the (N, N) per-pixel layers the mode needs; ``ctx`` the padded
-    ``ctx_<layer>`` arrays (without the prefix). Returns ``rgb`` uint8 (N, N, 3) and,
-    in joint mode, ``height`` float32 metres.
+    ``ctx_<layer>`` arrays (without the prefix). ``face``/``seed`` key the deterministic
+    noise channel; ``origin_i/j`` is the fine-pixel coordinate of ``fine[0, 0]`` on the
+    face (non-zero when ``fine`` is itself a padded raster). Returns ``rgb`` uint8
+    (N, N, 3) and, in joint mode, ``height`` float32 metres.
     """
     model.eval().to(device)
     cfg = model.cfg
@@ -157,8 +190,10 @@ def infer_face(
             b[f"ctx_{name}"] = torch.stack(
                 [torch.from_numpy(np.ascontiguousarray(a[i // f : i // f + cs, j // f : j // f + cs], dtype=np.float32)) for i, j in chunk]
             )[:, None].to(device)
-        cond, c = model.inputs(b, px_km)
-        out = model.stack_out(model(cond, c))
+        b["noise"] = torch.stack(
+            [torch.from_numpy(noise_field(face, i + origin_i, j + origin_j, tile, seed)) for i, j in chunk]
+        )[:, None].to(device)
+        out = model.stack_out(model.predict(b, px_km)[0])
         for (i, j), o in zip(chunk, out):
             acc[:, i : i + tile, j : j + tile] += o * win
             wsum[:, i : i + tile, j : j + tile] += win
