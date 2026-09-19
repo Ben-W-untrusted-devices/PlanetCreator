@@ -31,9 +31,9 @@ light_energy = 1.3
 shadow_enabled = false
 
 [node name="Planet" type="PlanetLod" parent="."]
-cube_dir = "res://../data/cube/4096"
-start_lat = -13.0
-start_lon = -72.0
+cube_dir = "res://../data/planets/seed3"
+start_lat = 20.0
+start_lon = 10.0
 start_altitude_m = 15000000.0
 
 [node name="Camera" type="Camera3D" parent="."]

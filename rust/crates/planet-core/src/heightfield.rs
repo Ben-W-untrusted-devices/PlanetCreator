@@ -145,3 +145,102 @@ mod tests {
         assert!((b - 2.0 * a).abs() < 1e-9);
     }
 }
+
+/// All six faces, sampled by direction with bilinear filtering that continues across
+/// face edges (the neighbours of an edge pixel are looked up on the adjacent face).
+pub struct CubeHeight {
+    pub faces: [FaceHeight; 6],
+}
+
+impl CubeHeight {
+    pub fn n(&self) -> usize {
+        self.faces[0].n
+    }
+
+    /// Value of the pixel whose centre is at face coordinates (u, v) — (u, v) may lie
+    /// up to one pixel outside the face, in which case the sample comes from wherever
+    /// that direction lands on the neighbouring face.
+    fn pixel_via_dir(&self, face: usize, u: f64, v: f64) -> f64 {
+        let n = self.faces[face].n;
+        if u.abs() <= 1.0 && v.abs() <= 1.0 {
+            return self.faces[face].nearest(u, v) as f64;
+        }
+        let d = crate::cubesphere::face_uv_to_dir(face, u, v);
+        let (f2, u2, v2) = dir_to_face_uv(d);
+        let (i, j) = uv_to_pixel(n, u2, v2);
+        self.faces[f2].data[i * n + j] as f64
+    }
+
+    pub fn sample_dir(&self, dir: DVec3) -> f64 {
+        let (face, u, v) = dir_to_face_uv(dir);
+        let n = self.faces[face].n as f64;
+        // continuous pixel coordinates (pixel centres at integers)
+        let x = (u + 1.0) * 0.5 * n - 0.5;
+        let y = (1.0 - v) * 0.5 * n - 0.5;
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let uv_of = |px: f64, py: f64| ((px + 0.5) / n * 2.0 - 1.0, 1.0 - (py + 0.5) / n * 2.0);
+        let mut acc = 0.0;
+        for (dy, wy) in [(0.0, 1.0 - fy), (1.0, fy)] {
+            for (dx, wx) in [(0.0, 1.0 - fx), (1.0, fx)] {
+                if wx * wy == 0.0 {
+                    continue;
+                }
+                let (pu, pv) = uv_of(x0 + dx, y0 + dy);
+                acc += self.pixel_via_dir(face, pu, pv) * wx * wy;
+            }
+        }
+        acc
+    }
+}
+
+#[cfg(test)]
+mod cube_tests {
+    use super::*;
+    use crate::cubesphere::{face_uv_to_dir, latlon_to_dir};
+
+    /// A smooth global function baked onto six faces should sample continuously across edges.
+    #[test]
+    fn sampling_is_continuous_across_face_edges() {
+        let n = 64;
+        let f = |d: DVec3| 1000.0 * (d[0] * 2.0).sin() * (d[1] * 3.0).cos() + 500.0 * d[2];
+        let faces: Vec<FaceHeight> = (0..6)
+            .map(|face| {
+                let mut data = vec![0.0f32; n * n];
+                for i in 0..n {
+                    for j in 0..n {
+                        let (u, v) = crate::cubesphere::pixel_uv(n, i, j);
+                        data[i * n + j] = f(face_uv_to_dir(face, u, v)) as f32;
+                    }
+                }
+                FaceHeight { n, data }
+            })
+            .collect();
+        let cube = CubeHeight {
+            faces: faces.try_into().ok().unwrap(),
+        };
+        // walk across the +X / +Y edge (lon 45) and the +X / +Z edge (lat 45 at lon 0)
+        for (lat, lon0, lon1) in [(10.0, 44.0, 46.0), (-30.0, 44.0, 46.0)] {
+            let mut prev: Option<f64> = None;
+            for k in 0..=200 {
+                let lon = lon0 + (lon1 - lon0) * k as f64 / 200.0;
+                let d = latlon_to_dir(lat, lon);
+                let s = cube.sample_dir(d);
+                assert!(
+                    (s - f(d)).abs() < 40.0,
+                    "value error {} at lon {lon}",
+                    s - f(d)
+                );
+                if let Some(p) = prev {
+                    assert!((s - p).abs() < 15.0, "jump {} at lon {lon}", s - p);
+                }
+                prev = Some(s);
+            }
+        }
+        for k in 0..=200 {
+            let lat = 44.0 + 2.0 * k as f64 / 200.0;
+            let d = latlon_to_dir(lat, 0.0);
+            assert!((cube.sample_dir(d) - f(d)).abs() < 40.0);
+        }
+    }
+}

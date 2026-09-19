@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use godot::classes::base_material_3d::TextureParam;
+use godot::classes::base_material_3d::{self, TextureParam};
 use godot::classes::image::Format;
 use godot::classes::mesh::{ArrayType, PrimitiveType};
 use godot::classes::{
@@ -18,15 +18,19 @@ use godot::classes::{
 };
 use godot::prelude::*;
 use planet_core::cube::BakedCube;
-use planet_core::cubesphere::{dir_to_face_uv, dir_to_latlon, face_uv_to_dir, latlon_to_dir};
+use planet_core::cubesphere::{
+    dir_to_face_uv, dir_to_latlon, face_uv_to_dir, latlon_to_dir, uv_to_pixel,
+};
 use planet_core::dvec::{self, DVec3};
-use planet_core::heightfield::{detail_height, FaceHeight};
+use planet_core::heightfield::{detail_height, CubeHeight, FaceHeight};
 use planet_core::npy::NpyData;
 use planet_core::quadtree::{select, LodParams, QuadNode};
 
 use crate::to_godot;
 
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
+/// Texture padding (pixels of the neighbouring face) on every side of a face texture.
+const TEX_PAD: usize = 8;
 
 /// Godot (Y-up) vector -> planet-core (Z-up) vector; inverse of `to_godot`.
 fn from_godot(v: Vector3) -> DVec3 {
@@ -70,10 +74,11 @@ pub struct PlanetLod {
     start_altitude_m: f64,
 
     cam: DVec3,
-    faces: Option<Box<[FaceHeight; 6]>>,
+    faces: Option<Box<CubeHeight>>,
     materials: Vec<Gd<StandardMaterial3D>>,
     patches: HashMap<QuadNode, Gd<MeshInstance3D>>,
     data_res_m: f64,
+    tex_size: usize,
     base: Base<Node3D>,
 }
 
@@ -98,6 +103,7 @@ impl INode3D for PlanetLod {
             materials: Vec::new(),
             patches: HashMap::new(),
             data_res_m: 2400.0,
+            tex_size: 4096,
             base,
         }
     }
@@ -160,6 +166,12 @@ impl PlanetLod {
         self.patches.len() as i32
     }
 
+    /// Planet centre in engine space (camera-relative, since the camera is at the origin).
+    #[func]
+    pub fn get_planet_center(&self) -> Vector3 {
+        to_godot(dvec::scale(self.cam, -1.0))
+    }
+
     #[func]
     pub fn get_camera_position_m(&self) -> Vector3 {
         Vector3::new(self.cam[0] as f32, self.cam[1] as f32, self.cam[2] as f32)
@@ -179,6 +191,8 @@ impl PlanetLod {
         let n = cube.meta.resolution;
         self.data_res_m = std::f64::consts::FRAC_PI_2 * self.radius_m / n as f64;
         let mut faces: Vec<FaceHeight> = Vec::with_capacity(6);
+        let mut rgb: Vec<Vec<u8>> = Vec::with_capacity(6);
+        let mut rgb_n = 0;
         for face in 0..6 {
             match cube.layer(face, "height") {
                 Ok(a) => faces.push(FaceHeight {
@@ -190,40 +204,87 @@ impl PlanetLod {
                     return;
                 }
             }
+            match cube.layer(face, "rgb") {
+                Ok(a) => {
+                    rgb_n = a.shape[0];
+                    match a.data {
+                        NpyData::U8(v) => rgb.push(v),
+                        _ => rgb.push(Vec::new()),
+                    }
+                }
+                Err(_) => rgb.push(Vec::new()),
+            }
+        }
+        let have_rgb = rgb.iter().all(|v| !v.is_empty());
+        if have_rgb {
+            let stride = (rgb_n / self.texture_res.max(1) as usize).max(1);
+            self.tex_size = rgb_n / stride;
+        }
+        let rgb: [Vec<u8>; 6] = rgb.try_into().ok().expect("six faces");
+        for face in 0..6 {
             let mut mat = StandardMaterial3D::new_gd();
             mat.set_roughness(1.0);
-            match self.face_texture(&cube, face) {
+            mat.set_flag(base_material_3d::Flags::USE_TEXTURE_REPEAT, false);
+            let tex = if have_rgb {
+                self.face_texture(&rgb, rgb_n, face)
+            } else {
+                None
+            };
+            match tex {
                 Some(tex) => mat.set_texture(TextureParam::ALBEDO, &tex),
                 None => mat.set_albedo(Color::from_rgb(0.3, 0.3, 0.3)),
             }
             self.materials.push(mat);
         }
-        self.faces = Some(Box::new(faces.try_into().ok().expect("six faces")));
+        self.faces = Some(Box::new(CubeHeight {
+            faces: faces.try_into().ok().expect("six faces"),
+        }));
     }
 
-    fn face_texture(&self, cube: &BakedCube, face: usize) -> Option<Gd<ImageTexture>> {
-        let rgb = cube.layer(face, "rgb").ok()?;
-        let NpyData::U8(px) = &rgb.data else {
-            return None;
-        };
-        let src = rgb.shape[0];
+    /// Face texture padded by `TEX_PAD` pixels taken from the neighbouring faces, so linear
+    /// filtering and mipmaps are seamless at face edges. UVs are remapped accordingly.
+    fn face_texture(
+        &self,
+        rgb: &[Vec<u8>; 6],
+        src: usize,
+        face: usize,
+    ) -> Option<Gd<ImageTexture>> {
         let stride = (src / self.texture_res.max(1) as usize).max(1);
         let out = src / stride;
+        let pad = TEX_PAD;
+        let w = out + 2 * pad;
         let mut bytes = PackedByteArray::new();
-        bytes.resize(out * out * 3);
+        bytes.resize(w * w * 3);
         {
             let dst = bytes.as_mut_slice();
-            for i in 0..out {
-                for j in 0..out {
-                    let s = ((i * stride) * src + j * stride) * 3;
-                    let d = (i * out + j) * 3;
-                    dst[d..d + 3].copy_from_slice(&px[s..s + 3]);
+            for i in 0..w {
+                for j in 0..w {
+                    let (ii, jj) = (i as i64 - pad as i64, j as i64 - pad as i64);
+                    let s = if ii >= 0 && jj >= 0 && (ii as usize) < out && (jj as usize) < out {
+                        let (si, sj) = (ii as usize * stride, jj as usize * stride);
+                        &rgb[face][(si * src + sj) * 3..(si * src + sj) * 3 + 3]
+                    } else {
+                        // beyond the edge: follow the direction onto the neighbouring face
+                        let u = (jj as f64 + 0.5) / out as f64 * 2.0 - 1.0;
+                        let v = 1.0 - (ii as f64 + 0.5) / out as f64 * 2.0;
+                        let (f2, u2, v2) = dir_to_face_uv(face_uv_to_dir(face, u, v));
+                        let (pi, pj) = uv_to_pixel(src, u2, v2);
+                        &rgb[f2][(pi * src + pj) * 3..(pi * src + pj) * 3 + 3]
+                    };
+                    let d = (i * w + j) * 3;
+                    dst[d..d + 3].copy_from_slice(s);
                 }
             }
         }
-        let mut img = Image::create_from_data(out as i32, out as i32, false, Format::RGB8, &bytes)?;
+        let mut img = Image::create_from_data(w as i32, w as i32, false, Format::RGB8, &bytes)?;
         img.generate_mipmaps();
         ImageTexture::create_from_image(&img)
+    }
+
+    /// Face-fraction [0, 1] -> texture coordinate inside the padded face texture.
+    fn tex_coord(&self, t: f64) -> f32 {
+        let out = self.tex_size as f64;
+        ((TEX_PAD as f64 + t * out) / (out + 2.0 * TEX_PAD as f64)) as f32
     }
 
     /// Height above the sphere for a direction, including detail down to `fine_m`.
@@ -232,9 +293,8 @@ impl PlanetLod {
     }
 
     fn height_at(&self, dir: DVec3, finest_m: f64) -> f64 {
-        let Some(faces) = &self.faces else { return 0.0 };
-        let (face, u, v) = dir_to_face_uv(dir);
-        let base = faces[face].sample(u, v);
+        let Some(cube) = &self.faces else { return 0.0 };
+        let base = cube.sample_dir(dir);
         if base <= 0.0 {
             return 0.0;
         }
@@ -348,8 +408,8 @@ impl PlanetLod {
                 let uc = u.clamp(u0, u1);
                 let vc = v.clamp(v0, v1);
                 uvs.push(Vector2::new(
-                    ((uc + 1.0) * 0.5) as f32,
-                    ((1.0 - vc) * 0.5) as f32,
+                    self.tex_coord((uc + 1.0) * 0.5),
+                    self.tex_coord((1.0 - vc) * 0.5),
                 ));
             }
         }
