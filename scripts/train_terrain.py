@@ -126,6 +126,7 @@ def main() -> None:
     if saved is not None:
         opt.load_state_dict(saved["opt"])
         sched.load_state_dict(saved["sched"])
+        sched.total_steps = args.steps  # allow --steps to differ from the interrupted run
         if disc is not None and saved.get("disc"):
             disc.load_state_dict(saved["disc"])
         if d_opt is not None and saved.get("d_opt"):
