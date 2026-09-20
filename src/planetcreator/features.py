@@ -82,8 +82,11 @@ def noise_field(face: int, i0: int, j0: int, size: int, seed: int = 0) -> np.nda
     fine pixel is (i0, j0) on ``face``: the same pixel always gets the same value, so
     overlapping tiles agree and a quadtree node refines identically every time."""
     m = np.uint64(0xFFFFFFFFFFFFFFFF)
-    ii = np.arange(i0, i0 + size, dtype=np.uint64)[:, None]
-    jj = np.arange(j0, j0 + size, dtype=np.uint64)[None, :]
+    # Coordinates may be negative (padded rasters); shift by a fixed offset so the key
+    # stays a valid uint64 and the same pixel hashes the same wherever it is asked from.
+    off = 1 << 20
+    ii = np.arange(i0 + off, i0 + off + size, dtype=np.uint64)[:, None]
+    jj = np.arange(j0 + off, j0 + off + size, dtype=np.uint64)[None, :]
     with np.errstate(over="ignore"):
         h = (ii * np.uint64(0x9E3779B97F4A7C15)) ^ (jj * np.uint64(0xBF58476D1CE4E5B9))
         salt = (np.uint64(face + 1) * np.uint64(0x94D049BB133111EB)) ^ (np.uint64(seed) * np.uint64(0x2545F4914F6CDD1D))

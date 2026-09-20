@@ -25,6 +25,9 @@ build/
 *.safetensors
 # Small test fixtures are the exception
 !rust/crates/planet-core/tests/data/*.npy
+# Released model weights (fp16, ~17 MB each) are tracked so a fresh clone can generate
+# planets without retraining. Keep to one file per model name; history grows per update.
+!models/*.pt
 
 # OS / editors
 .DS_Store

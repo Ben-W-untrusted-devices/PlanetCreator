@@ -41,7 +41,7 @@ def main() -> None:
     ap.add_argument("--iters", type=int, default=200, help="erosion steps")
     ap.add_argument("--smooth", type=float, nargs=2, default=(6.0, 3.0), metavar=("LOWLAND", "MOUNTAIN"),
                     help="Gaussian sigmas (erosion px) blended by elevation before downsampling")
-    ap.add_argument("--checkpoint", type=Path, default=Path("runs/joint/last.pt"))
+    ap.add_argument("--checkpoint", type=Path, default=Path("models/joint_latest.pt"))
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--land", type=float, default=0.3)
     ap.add_argument("--humidity", type=float, default=1.0)

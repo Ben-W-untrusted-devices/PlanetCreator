@@ -64,10 +64,17 @@ uv run scripts/render_face.py runs/joint/last.pt --face ny                     #
 Training writes `log.csv`, `val_<step>.png` (rows: input height, predicted
 height, predicted RGB, true RGB, true height on held-out patches) and `last.pt`.
 
+## Released model
+
+`models/joint_latest.pt` is the current 2.4 km-stage joint model (fp16 weights, 17 MB),
+tracked in the repo so a fresh clone can generate planets without the ~4 h of training.
+`models/joint_latest.json` records its training step, validation metrics and git
+commit. Export a new one with `scripts/export_release.py runs/<run>/last.pt`.
+
 ## Synthetic planets
 
 ```bash
-uv run scripts/make_planet.py --seed 3 --checkpoint runs/joint/last.pt   # ~10 min on an M1
+uv run scripts/make_planet.py --seed 3        # uses models/joint_latest.pt; ~15 min on an M1
 ```
 
 `planetcreator.procgen` builds a noise base map (continents, shelves, mountain
