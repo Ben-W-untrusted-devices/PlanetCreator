@@ -22,6 +22,7 @@ def to_dev(b: dict, device: str) -> dict:
 
 def sample_grid(model, batch, device, path: Path, n: int = 8) -> None:
     """Rows: input height (coarse in joint mode), predicted height (joint), predicted rgb, true rgb, true height."""
+    n = min(n, len(batch["rgb"]))
     model.eval()
     with torch.no_grad():
         b = to_dev({k: v[:n] for k, v in batch.items()}, device)
@@ -80,6 +81,8 @@ def main() -> None:
     ap.add_argument("--val-patches", type=int, default=64)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--resume", type=Path, default=None, help="weights to start from (optimiser restarts)")
+    ap.add_argument("--continue", dest="cont", type=Path, default=None,
+                    help="checkpoint of an interrupted run: restores weights, optimiser, schedule and step")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -99,7 +102,12 @@ def main() -> None:
     val_dl = DataLoader(val_ds, batch_size=args.batch, **dl_kw)
     val_batch = next(iter(val_dl))
 
-    if args.resume:
+    start_step, saved = 0, None
+    if args.cont:
+        model, saved = TerrainNet.load(args.cont, device)
+        start_step = saved.get("step", 0)
+        print(f"continuing {args.cont} from step {start_step}")
+    elif args.resume:
         model, ck = TerrainNet.load(args.resume, device)
         model.cfg.adv_weight = args.adv
         print(f"resumed weights from {args.resume} (step {ck.get('step')})")
@@ -115,20 +123,31 @@ def main() -> None:
     if args.adv > 0:
         disc = model.make_discriminator().to(device)
         d_opt = torch.optim.Adam(disc.parameters(), lr=args.d_lr, betas=(0.0, 0.99))
+    if saved is not None:
+        opt.load_state_dict(saved["opt"])
+        sched.load_state_dict(saved["sched"])
+        if disc is not None and saved.get("disc"):
+            disc.load_state_dict(saved["disc"])
+        if d_opt is not None and saved.get("d_opt"):
+            d_opt.load_state_dict(saved["d_opt"])
     print(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M"
           + (f" + D {sum(p.numel() for p in disc.parameters()) / 1e6:.2f}M" if disc else ""))
 
     with open(args.out / "log.csv", "a", newline="") as log:
-        train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log)
+        train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step)
 
 
-def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log) -> None:
+def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step=0) -> None:
     writer = csv.writer(log)
     if log.tell() == 0:
         writer.writerow(["step", "loss", "l1", "h_l1_m", "adv", "d", "val_rgb", "val_height_m", "lr", "sec"])
     t0 = time.time()
     model.train()
+    # The dataset is deterministic per index, so skipping the first `start_step` batches
+    # resumes on the exact data an interrupted run would have seen next.
     for step, b in enumerate(train_dl, start=1):
+        if step <= start_step:
+            continue
         if step > args.steps:
             break
         b = to_dev(b, device)
@@ -150,14 +169,15 @@ def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, dev
         if step % 50 == 0:
             extra = f" h {parts['h_l1_m']:.0f}m" if "h_l1_m" in parts else ""
             extra += f" adv {parts['adv']:.3f} d {d_val:.3f}" if disc is not None else ""
-            print(f"step {step} loss {loss.item():.4f} l1 {parts['l1']:.4f}{extra} {(time.time() - t0) / step:.2f}s/it", flush=True)
+            print(f"step {step} loss {loss.item():.4f} l1 {parts['l1']:.4f}{extra} {(time.time() - t0) / (step - start_step):.2f}s/it", flush=True)
         if step % args.eval_every == 0 or step == args.steps:
             val = evaluate(model, val_dl, device)
             writer.writerow([step, loss.item(), parts["l1"], parts.get("h_l1_m", float("nan")), parts.get("adv", float("nan")),
                              d_val, val["rgb"], val["height_m"], sched.get_last_lr()[0], time.time() - t0])
             log.flush()
             sample_grid(model, val_batch, device, args.out / f"val_{step:06d}.png")
-            model.save(args.out / "last.pt", step=step, disc=disc.state_dict() if disc else None)
+            model.save(args.out / "last.pt", step=step, opt=opt.state_dict(), sched=sched.state_dict(),
+                       disc=disc.state_dict() if disc else None, d_opt=d_opt.state_dict() if d_opt else None)
             model.save(args.out / f"step_{step:06d}.pt", step=step)  # GAN runs oscillate; keep every checkpoint
             print(f"  val rgb {val['rgb']:.4f} height {val['height_m']:.0f}m  saved", flush=True)
 
