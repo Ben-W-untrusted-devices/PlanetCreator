@@ -19,6 +19,7 @@ from .features import (
     build_cond,
     build_ctx,
     coarse_from_ctx,
+    mean_preserving_upsample,
     noise_field,
 )
 from .models import ContextUNet, PatchDiscriminator, hinge_d_loss, hinge_g_loss
@@ -75,7 +76,10 @@ class TerrainNet(nn.Module):
 
     @staticmethod
     def _block_mean(x: torch.Tensor, f: int) -> torch.Tensor:
-        return F.interpolate(F.avg_pool2d(x, f), scale_factor=f, mode="nearest")
+        """A *smooth* field with the same ``f``-block means as ``x``. Subtracting it leaves
+        ``x`` exactly zero-mean per block without introducing steps at block edges (a
+        piecewise-constant block mean would turn every mean error into a staircase)."""
+        return mean_preserving_upsample(F.avg_pool2d(x, f), f)
 
     def target(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         t = {"rgb": batch["rgb"]}

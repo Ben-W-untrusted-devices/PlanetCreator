@@ -70,9 +70,6 @@ def main() -> None:
     print(f"erosion ({args.iters} steps)", flush=True)
     height, _acc = erode(g["height"].astype(np.float64), uplift_field(planet, g["dirs"], g["height"], 1.2),
                          ErosionParams(iters=args.iters, routing_power=1.0, k_variation=0.4), progress=lambda i, n: print(f"  {i}/{n}", flush=True) if i % 50 == 0 else None)
-    print("climate", flush=True)
-    clim = climate_equirect(planet, g["dirs"], height)
-
     # The eroded map is the *coarse* truth (context scale); the model invents the fine scale.
     # Its roughness must match Earth's coarse map (smooth lowlands, rugged belts; see
     # docs/approaches.md) or the model amplifies grid-scale dissection into hatching.
@@ -85,6 +82,11 @@ def main() -> None:
         low = gaussian_filter(height, args.smooth[0], mode=("nearest", "wrap"))
         mtn = gaussian_filter(height, args.smooth[1], mode=("nearest", "wrap"))
         height = np.where(ocean, height, np.maximum((1 - w) * low + w * mtn, 0.5)).astype(np.float32)
+    # Climate is derived from the *smoothed* height: temperature carries altitude (lapse
+    # rate), so anything finer than the coarse map here would leak unsmoothed erosion
+    # structure into the model's fine inputs.
+    print("climate", flush=True)
+    clim = climate_equirect(planet, g["dirs"], height)
     coarse = box_downsample(height, max(1, W // 2048))
     layers = {k: EquirectGrid(v) for k, v in clim.items()}
     print("bake", flush=True)
