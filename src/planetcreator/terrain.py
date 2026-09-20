@@ -36,6 +36,9 @@ class TerrainConfig:
     grad_weight: float = 0.5  # image-gradient L1 term (rgb and height)
     height_weight: float = 2.0  # weight of the height terms in joint mode
     adv_weight: float = 0.0  # adversarial term; 0 disables the discriminator
+    perc_weight: float = 0.0  # VGG perceptual term on rgb; 0 disables (needs torchvision weights)
+    r1_gamma: float = 0.0  # R1 gradient penalty on the discriminator; 0 disables
+    r1_every: int = 4  # lazy R1: apply every n discriminator steps (scaled accordingly)
 
 
 class TerrainNet(nn.Module):
@@ -93,11 +96,17 @@ class TerrainNet(nn.Module):
             a[..., :, 1:] - a[..., :, :-1], b[..., :, 1:] - b[..., :, :-1]
         )
 
-    def loss(self, pred: dict, target: dict, fake_logits: torch.Tensor | None = None) -> tuple[torch.Tensor, dict[str, float]]:
+    def loss(
+        self, pred: dict, target: dict, fake_logits: torch.Tensor | None = None, perceptual: nn.Module | None = None
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         l1 = F.l1_loss(pred["rgb"], target["rgb"])
         grad = self._grad_l1(pred["rgb"], target["rgb"])
         total = l1 + self.cfg.grad_weight * grad
         parts = {"l1": l1.item(), "grad": grad.item()}
+        if perceptual is not None and self.cfg.perc_weight > 0:
+            perc = perceptual(pred["rgb"], target["rgb"])
+            total = total + self.cfg.perc_weight * perc
+            parts["perc"] = perc.item()
         if "height" in pred:
             hl1 = F.l1_loss(pred["height"], target["height"])
             hgrad = self._grad_l1(pred["height"], target["height"])

@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from planetcreator.dataset import FINE_LAYERS, CubePatchDataset, PatchSpec
 from planetcreator.features import HEIGHT_SCALE
+from planetcreator.models import VGGPerceptual, r1_penalty
 from planetcreator.terrain import TerrainConfig, TerrainNet, pick_device
 
 
@@ -76,6 +77,8 @@ def main() -> None:
     ap.add_argument("--min-land", type=float, default=0.3)
     ap.add_argument("--adv", type=float, default=0.0, help="adversarial weight; >0 trains a PatchGAN too")
     ap.add_argument("--d-lr", type=float, default=2e-4)
+    ap.add_argument("--perc", type=float, default=0.0, help="VGG perceptual weight on rgb")
+    ap.add_argument("--r1", type=float, default=0.0, help="R1 gradient penalty gamma for the discriminator")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--val-patches", type=int, default=64)
@@ -109,13 +112,14 @@ def main() -> None:
         print(f"continuing {args.cont} from step {start_step}")
     elif args.resume:
         model, ck = TerrainNet.load(args.resume, device)
-        model.cfg.adv_weight = args.adv
         print(f"resumed weights from {args.resume} (step {ck.get('step')})")
     else:
         model = TerrainNet(
-            TerrainConfig(mode=args.mode, base=args.base, depth=args.depth, adv_weight=args.adv,
-                          ctx_pad=train_ds.pad, ctx_factor=train_ds.f)
+            TerrainConfig(mode=args.mode, base=args.base, depth=args.depth, ctx_pad=train_ds.pad, ctx_factor=train_ds.f)
         )
+    # loss weights always come from the command line, so a phase can change them
+    model.cfg.adv_weight, model.cfg.perc_weight, model.cfg.r1_gamma = args.adv, args.perc, args.r1
+    perceptual = VGGPerceptual().to(device) if args.perc > 0 else None
     model.to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, args.lr, total_steps=args.steps, pct_start=0.05)
@@ -135,13 +139,13 @@ def main() -> None:
           + (f" + D {sum(p.numel() for p in disc.parameters()) / 1e6:.2f}M" if disc else ""))
 
     with open(args.out / "log.csv", "a", newline="") as log:
-        train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step)
+        train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step, perceptual)
 
 
-def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step=0) -> None:
+def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, device, log, start_step=0, perceptual=None) -> None:
     writer = csv.writer(log)
     if log.tell() == 0:
-        writer.writerow(["step", "loss", "l1", "h_l1_m", "adv", "d", "val_rgb", "val_height_m", "lr", "sec"])
+        writer.writerow(["step", "loss", "l1", "h_l1_m", "adv", "d", "perc", "r1", "val_rgb", "val_height_m", "lr", "sec"])
     t0 = time.time()
     model.train()
     # The dataset is deterministic per index, so skipping the first `start_step` batches
@@ -154,14 +158,19 @@ def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, dev
         b = to_dev(b, device)
         target = model.target(b)
         out, cond, _ctx = model.predict(b)
-        d_val = float("nan")
+        d_val = r1_val = float("nan")
         if disc is not None:
-            d_loss = model.d_loss(disc(cond, model.stack_out(target)), disc(cond, model.stack_out(out).detach()))
+            real = model.stack_out(target)
+            d_loss = model.d_loss(disc(cond, real), disc(cond, model.stack_out(out).detach()))
+            if model.cfg.r1_gamma > 0 and step % model.cfg.r1_every == 0:
+                r1 = r1_penalty(disc, cond, real)
+                d_loss = d_loss + 0.5 * model.cfg.r1_gamma * model.cfg.r1_every * r1
+                r1_val = r1.item()
             d_opt.zero_grad(set_to_none=True)
             d_loss.backward()
             d_opt.step()
             d_val = d_loss.item()
-        loss, parts = model.loss(out, target, disc(cond, model.stack_out(out)) if disc is not None else None)
+        loss, parts = model.loss(out, target, disc(cond, model.stack_out(out)) if disc is not None else None, perceptual)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -169,12 +178,14 @@ def train(args, model, opt, sched, disc, d_opt, train_dl, val_dl, val_batch, dev
         sched.step()
         if step % 50 == 0:
             extra = f" h {parts['h_l1_m']:.0f}m" if "h_l1_m" in parts else ""
+            extra += f" perc {parts['perc']:.3f}" if "perc" in parts else ""
             extra += f" adv {parts['adv']:.3f} d {d_val:.3f}" if disc is not None else ""
             print(f"step {step} loss {loss.item():.4f} l1 {parts['l1']:.4f}{extra} {(time.time() - t0) / (step - start_step):.2f}s/it", flush=True)
         if step % args.eval_every == 0 or step == args.steps:
             val = evaluate(model, val_dl, device)
             writer.writerow([step, loss.item(), parts["l1"], parts.get("h_l1_m", float("nan")), parts.get("adv", float("nan")),
-                             d_val, val["rgb"], val["height_m"], sched.get_last_lr()[0], time.time() - t0])
+                             d_val, parts.get("perc", float("nan")), r1_val, val["rgb"], val["height_m"],
+                             sched.get_last_lr()[0], time.time() - t0])
             log.flush()
             sample_grid(model, val_batch, device, args.out / f"val_{step:06d}.png")
             model.save(args.out / "last.pt", step=step, opt=opt.state_dict(), sched=sched.state_dict(),

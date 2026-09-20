@@ -10,3 +10,4 @@
 - Godot project is `godot/`; the extension manifest points at `rust/target/{debug,release}`.
 - Validation is by held-out regions (`bake.DEFAULT_HOLDOUT`), never random patches.
 - Design docs in `docs/`; keep them updated when a decision changes.
+- Training runs go through `scripts/train_bg.sh` / `scripts/train_v2.sh` (detached, `caffeinate`, resumable), never a foreground Bash call. Judge height outputs by 1:1 hillshade. Exporting to `models/` is a manual gate after review.

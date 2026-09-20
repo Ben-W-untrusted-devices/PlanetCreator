@@ -110,3 +110,37 @@ def hinge_d_loss(real_logits: torch.Tensor, fake_logits: torch.Tensor) -> torch.
 
 def hinge_g_loss(fake_logits: torch.Tensor) -> torch.Tensor:
     return -fake_logits.mean()
+
+
+class VGGPerceptual(nn.Module):
+    """LPIPS-style perceptual distance: L1 between VGG16 features (relu1_2, relu2_2,
+    relu3_3) of two RGB images in [0, 1]. Frozen ImageNet weights."""
+
+    def __init__(self):
+        super().__init__()
+        from torchvision.models import VGG16_Weights, vgg16
+
+        feats = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features.eval()
+        for p in feats.parameters():
+            p.requires_grad_(False)
+        self.slices = nn.ModuleList([feats[:4], feats[4:9], feats[9:16]])
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        a = (a - self.mean) / self.std
+        b = (b - self.mean) / self.std
+        loss = 0.0
+        for s in self.slices:
+            a, b = s(a), s(b)
+            loss = loss + F.l1_loss(a, b)
+        return loss
+
+
+def r1_penalty(disc: PatchDiscriminator, cond: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
+    """R1 gradient penalty (Mescheder et al. 2018): ||grad_x D(x_real)||^2, which keeps the
+    discriminator smooth around the data and lets a stronger adversarial weight be used."""
+    real = real.detach().requires_grad_(True)
+    logits = disc(cond, real).sum()
+    (grad,) = torch.autograd.grad(logits, real, create_graph=True)
+    return grad.pow(2).flatten(1).sum(1).mean()
