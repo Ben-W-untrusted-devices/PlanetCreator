@@ -52,37 +52,25 @@ class TerrainNet(nn.Module):
         cond = build_cond(batch, self.cfg.mode, px_km=px_km, ctx_pad=self.cfg.ctx_pad, ctx_factor=self.cfg.ctx_factor)
         return cond, build_ctx(batch)
 
-    def coarse_nearest(self, batch: dict[str, torch.Tensor]) -> torch.Tensor | None:
-        """Normalised nearest-upsampled coarse height for the mean-preserving residual."""
-        if self.cfg.mode != "joint":
-            return None
-        up = coarse_from_ctx(batch, batch["lat"].shape[-1], self.cfg.ctx_pad, self.cfg.ctx_factor)
-        return up["height_nearest"] / HEIGHT_SCALE
-
     def predict(self, batch: dict[str, torch.Tensor], px_km: float = TRAIN_PX_KM) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Convenience: inputs + forward with the mean-preserving residual. Returns (out, cond, ctx)."""
+        """Convenience: inputs + forward. Returns (out, cond, ctx)."""
         cond, ctx = self.inputs(batch, px_km)
-        return self(cond, ctx, self.coarse_nearest(batch)), cond, ctx
+        return self(cond, ctx), cond, ctx
 
-    def forward(self, cond: torch.Tensor, ctx: torch.Tensor, coarse_nearest: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+    def forward(self, cond: torch.Tensor, ctx: torch.Tensor) -> dict[str, torch.Tensor]:
         """Returns ``rgb`` in [0, 1] and, in joint mode, ``height`` normalised (/HEIGHT_SCALE).
 
-        The height head predicts a residual over the bilinearly upsampled coarse height
-        (channel 0 of ``cond``). The residual is made **mean-preserving**: every
-        ``ctx_factor``-sized block of the output averages exactly to the coarse texel
-        (``coarse_nearest``, normalised), so the coarse level is always the block mean of
+        The height head predicts a residual over the smooth mean-preserving upsample of the
+        coarse height (channel 0 of ``cond``). The residual is forced to zero mean over
+        every ``ctx_factor``-sized block, so the coarse level stays exactly the block mean of
         the fine level and LOD transitions do not pop.
         """
         y = self.net(cond, ctx, self.cfg.ctx_pad, self.cfg.ctx_factor)
         out = {"rgb": torch.sigmoid(y[:, :3])}
         if self.cfg.mode == "joint":
             f = self.cfg.ctx_factor
-            up = cond[:, :1]
             r = y[:, 3:4]
-            r = r - self._block_mean(r, f)
-            if coarse_nearest is not None:
-                r = r + coarse_nearest - self._block_mean(up, f)
-            out["height"] = up + r
+            out["height"] = cond[:, :1] + r - self._block_mean(r, f)
         return out
 
     @staticmethod

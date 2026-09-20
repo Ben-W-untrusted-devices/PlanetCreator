@@ -119,3 +119,15 @@ def test_noise_field_is_deterministic_and_position_keyed():
     c = noise_field(2, 100, 204, 16)
     assert np.array_equal(a[:, 4:], c[:, :12])
     assert not np.array_equal(noise_field(3, 100, 200, 16), a)
+
+
+def test_mean_preserving_upsample_is_exact_and_smooth():
+    from planetcreator.features import mean_preserving_upsample
+
+    torch.manual_seed(0)
+    c = torch.randn(1, 1, 12, 12) * 1000
+    up = mean_preserving_upsample(c, 8)
+    assert torch.allclose(torch.nn.functional.avg_pool2d(up, 8), c, atol=1e-3)
+    # smooth: the largest pixel-to-pixel step is far below the coarse texel differences
+    step = (up[..., 1:] - up[..., :-1]).abs().max()
+    assert step < 0.35 * (c[..., 1:] - c[..., :-1]).abs().max()

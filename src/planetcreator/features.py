@@ -97,20 +97,37 @@ def noise_field(face: int, i0: int, j0: int, size: int, seed: int = 0) -> np.nda
     return ((h >> np.uint64(11)).astype(np.float64) / float(1 << 53) * 2.0 - 1.0).astype(np.float32)
 
 
+def mean_preserving_upsample(coarse: torch.Tensor, factor: int, iters: int = 4) -> torch.Tensor:
+    """Smooth ``factor``x upsample whose ``factor``-sized block means equal ``coarse`` exactly
+    (to fixed-point tolerance): bilinear, then repeatedly add the bilinear upsample of the
+    block-mean error. Unlike a per-block constant correction it has no steps at block edges."""
+    up = F.interpolate(coarse, scale_factor=factor, mode="bilinear", align_corners=False)
+    for _ in range(iters):
+        err = coarse - F.avg_pool2d(up, factor)
+        up = up + F.interpolate(err, scale_factor=factor, mode="bilinear", align_corners=False)
+    # final exact snap: a tiny residual constant per block (below 1e-3 of the signal after 4 iterations)
+    err = coarse - F.avg_pool2d(up, factor)
+    return up + F.interpolate(err, scale_factor=factor, mode="nearest")
+
+
 def coarse_from_ctx(batch: dict[str, torch.Tensor], patch: int, pad: int, factor: int) -> dict[str, torch.Tensor]:
     """The centre of the context window (the patch's own footprint) upsampled to patch
     resolution, as raw-unit layers: what a generator knows about a patch at coarse scale.
 
     Everything is upsampled bilinearly (the water mask becomes a soft coverage ramp);
-    nearest upsampling gave the model 8-px staircases to reproduce. ``height_nearest``
-    is also returned for the mean-preserving residual (see ``TerrainNet.forward``)."""
+    nearest upsampling gave the model 8-px staircases to reproduce. Height uses the
+    smooth mean-preserving upsample so the residual head only has to add zero-mean
+    detail (see ``TerrainNet.forward``). The crop is taken one coarse texel wider on each
+    side so the interpolation at the patch border sees its real neighbours."""
     c0, cs = pad // factor, patch // factor
     out = {}
     for name in ("height", "water", "flowacc", *DIST_NAMES):
-        crop = batch[f"ctx_{name}"][..., c0 : c0 + cs, c0 : c0 + cs].float()
-        out[name] = F.interpolate(crop, scale_factor=factor, mode="bilinear", align_corners=False)
-    crop = batch["ctx_height"][..., c0 : c0 + cs, c0 : c0 + cs].float()
-    out["height_nearest"] = F.interpolate(crop, scale_factor=factor, mode="nearest")
+        crop = batch[f"ctx_{name}"][..., c0 - 1 : c0 + cs + 1, c0 - 1 : c0 + cs + 1].float()
+        if name == "height":
+            up = mean_preserving_upsample(crop, factor)
+        else:
+            up = F.interpolate(crop, scale_factor=factor, mode="bilinear", align_corners=False)
+        out[name] = up[..., factor:-factor, factor:-factor]
     return out
 
 

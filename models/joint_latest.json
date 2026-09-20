@@ -1,0 +1,33 @@
+{
+  "name": "joint_latest",
+  "source_checkpoint": "runs/joint2_adv/last.pt",
+  "step": 3000,
+  "cfg": {
+    "mode": "joint",
+    "base": 32,
+    "depth": 4,
+    "ctx_base": 32,
+    "ctx_pad": 896,
+    "ctx_factor": 8,
+    "grad_weight": 0.5,
+    "height_weight": 2.0,
+    "adv_weight": 0.02
+  },
+  "params": 8584644,
+  "precision": "fp16",
+  "validation": {
+    "step": "3000",
+    "loss": "0.13846369087696075",
+    "l1": "0.03827447071671486",
+    "h_l1_m": "28.8170725107193",
+    "adv": "2.9159374237060547",
+    "d": "0.4126141369342804",
+    "val_rgb": "0.06250627525150776",
+    "val_height_m": "27.88804704323411",
+    "lr": "4.303772358368046e-10",
+    "sec": "8824.265326738358"
+  },
+  "git_commit": "644fc7c",
+  "exported": "2026-09-20T14:34:47+00:00",
+  "train_log": "device=mps mode=joint out=runs/joint2_adv"
+}
