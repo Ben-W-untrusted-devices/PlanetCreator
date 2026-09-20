@@ -138,6 +138,15 @@ def infer_faces(args, out: Path, t0: float) -> None:
         fdir = out / name
         h = np.load(fdir / "height.npy", mmap_mode="r")[::step, ::step]
         Image.fromarray(np.clip((np.asarray(h) + 500) / 6000 * 255, 0, 255).astype(np.uint8)).save(out / "preview" / f"{name}_height.png")
+        # 1:1 hillshade of the centre of the face: block/grid artefacts are invisible in
+        # a downsampled height preview but obvious here
+        c = args.res // 2
+        full = np.asarray(np.load(fdir / "height.npy", mmap_mode="r")[c - 400 : c + 400, c - 400 : c + 400], dtype=np.float64)
+        gy, gx = np.gradient(full)
+        shade = np.clip(0.5 + (gx - gy) / 250.0, 0, 1)
+        img = np.stack([shade] * 3, -1)
+        img[full <= 0] = [0.05, 0.1, 0.25]
+        Image.fromarray((img * 255).astype(np.uint8)).save(out / "preview" / f"{name}_hillshade.png")
     print(f"done ({time.time() - t0:.0f}s)", flush=True)
 
     def info(p):
