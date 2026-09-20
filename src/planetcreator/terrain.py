@@ -159,6 +159,7 @@ def infer_face(
     seed: int = 0,
     origin_i: int = 0,
     origin_j: int = 0,
+    ctx_stored_pad: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Run the model over a whole face with overlapping, Hann-blended tiles.
 
@@ -172,6 +173,9 @@ def infer_face(
     cfg = model.cfg
     n = fine["lat"].shape[0]
     f, pad = cfg.ctx_factor, cfg.ctx_pad
+    stored = cfg.ctx_pad if ctx_stored_pad is None else ctx_stored_pad
+    # context index of the window start for a tile at fine index i (face pixel i + origin)
+    ctx_off = (stored - pad) // f
     stride = (tile - overlap) // f * f
     starts = sorted({min(s, n - tile) for s in range(0, n, stride)})
     cs = (tile + 2 * pad) // f
@@ -188,7 +192,18 @@ def infer_face(
         for name in CTX_LAYERS:
             a = ctx[name]
             b[f"ctx_{name}"] = torch.stack(
-                [torch.from_numpy(np.ascontiguousarray(a[i // f : i // f + cs, j // f : j // f + cs], dtype=np.float32)) for i, j in chunk]
+                [
+                    torch.from_numpy(
+                        np.ascontiguousarray(
+                            a[
+                                (i + origin_i) // f + ctx_off : (i + origin_i) // f + ctx_off + cs,
+                                (j + origin_j) // f + ctx_off : (j + origin_j) // f + ctx_off + cs,
+                            ],
+                            dtype=np.float32,
+                        )
+                    )
+                    for i, j in chunk
+                ]
             )[:, None].to(device)
         b["noise"] = torch.stack(
             [torch.from_numpy(noise_field(face, i + origin_i, j + origin_j, tile, seed)) for i, j in chunk]

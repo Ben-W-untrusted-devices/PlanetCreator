@@ -63,6 +63,15 @@ def dir_to_face_uv(d: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return face, unwarp(s), unwarp(t)
 
 
+def dir_to_uv_on_face(d: np.ndarray, face: int) -> tuple[np.ndarray, np.ndarray]:
+    """(u, v) of directions projected onto a *given* face's tangent plane, unclamped
+    (|u| > 1 beyond the face edge). Used to resample a neighbouring face's padded raster."""
+    d = np.asarray(d, dtype=np.float64)
+    n, tu, tv = FACE_AXES[face]
+    dn = d @ n
+    return unwarp((d @ tu) / dn), unwarp((d @ tv) / dn)
+
+
 def dir_to_latlon(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Degrees. lat in [-90, 90], lon in [-180, 180)."""
     d = np.asarray(d, dtype=np.float64)
@@ -88,6 +97,13 @@ def face_pixel_uv(n: int, pad: int = 0) -> tuple[np.ndarray, np.ndarray]:
     c = (np.arange(-pad, n + pad, dtype=np.float64) + 0.5) / n * 2 - 1
     u, v = np.meshgrid(c, -c)  # rows run from +v (top) to -v
     return u, v
+
+
+def uv_to_pixel(n: int, u: float, v: float) -> tuple[int, int]:
+    """Nearest pixel (row, col) of an n x n face raster for face coordinates; clamps at the edges."""
+    j = int(np.clip(np.rint((u + 1.0) / 2.0 * n - 0.5), 0, n - 1))
+    i = int(np.clip(np.rint((1.0 - v) / 2.0 * n - 0.5), 0, n - 1))
+    return i, j
 
 
 def face_pixel_latlon(face: int, n: int, pad: int = 0) -> tuple[np.ndarray, np.ndarray]:

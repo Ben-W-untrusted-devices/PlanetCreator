@@ -225,6 +225,7 @@ impl PlanetLod {
             let mut mat = StandardMaterial3D::new_gd();
             mat.set_roughness(1.0);
             mat.set_flag(base_material_3d::Flags::USE_TEXTURE_REPEAT, false);
+            mat.set_texture_filter(base_material_3d::TextureFilter::LINEAR_WITH_MIPMAPS_ANISOTROPIC);
             let tex = if have_rgb {
                 self.face_texture(&rgb, rgb_n, face)
             } else {

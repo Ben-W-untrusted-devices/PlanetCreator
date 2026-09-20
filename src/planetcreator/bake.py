@@ -69,6 +69,7 @@ class BakeSpec:
     flow_downsample: int = 1  # box-downsample the fine height before routing (speed)
     dist_pad: int = 1024  # fine pixels of padding for the directional distances
     dist_cap_km: float = 2500.0
+    fine_pad: int = 0  # also write pad_<layer>.npy: the fine layers extended this far beyond each edge
 
 
 def box_downsample(a: np.ndarray, f: int) -> np.ndarray:
@@ -155,6 +156,11 @@ def bake(spec: BakeSpec, root: Path, faces: range = range(6), progress=None) -> 
         np.save(fdir / "holdout.npy", hold)
         for k, a in _sample_all(fine, fine_nearest, lat, lon).items():
             np.save(fdir / f"{k}.npy", a)
+        if spec.fine_pad:
+            plat, plon = face_pixel_latlon(fi, n, spec.fine_pad)
+            np.save(fdir / "pad_lat.npy", plat.astype(np.float32))
+            for k, a in _sample_all(fine, fine_nearest, plat, plon).items():
+                np.save(fdir / f"pad_{k}.npy", a)
         if fine_height is not None:
             if progress:
                 progress(f"{name}: distances")
@@ -184,6 +190,7 @@ def bake(spec: BakeSpec, root: Path, faces: range = range(6), progress=None) -> 
         "faces": list(FACE_NAMES),
         "layers": {k: info(first / f"{k}.npy") for k in layer_names},
         "ctx": {"factor": f, "pad": spec.ctx_pad, "layers": {k: info(first / f"ctx_{k}.npy") for k in CTX_LAYERS}},
+        "fine_pad": spec.fine_pad,
         "holdout": [vars(b) for b in spec.holdout],
         "convention": "see planetcreator.cubesphere docstring",
     }

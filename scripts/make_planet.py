@@ -18,6 +18,7 @@ from PIL import Image
 from planetcreator.bake import CTX_LAYERS, BakeSpec, bake, box_downsample, load_meta
 from planetcreator.cubesphere import FACE_NAMES
 from planetcreator.erosion import ErosionParams, erode
+from planetcreator.faceblend import blend_faces
 from planetcreator.features import px_km_for_face
 from planetcreator.layers import EquirectGrid
 from planetcreator.procgen import (
@@ -28,6 +29,8 @@ from planetcreator.procgen import (
     uplift_field,
 )
 from planetcreator.terrain import TerrainNet, coarse_layers_for_face, infer_face, pick_device
+
+FINE_PAD = 128  # fine pixels inferred beyond each face edge, then cross-faded with the neighbour
 
 
 def main() -> None:
@@ -85,7 +88,9 @@ def main() -> None:
     coarse = box_downsample(height, max(1, W // 2048))
     layers = {k: EquirectGrid(v) for k, v in clim.items()}
     print("bake", flush=True)
-    bake(BakeSpec(args.res, layers, coarse_height=EquirectGrid(coarse), holdout=()), out)
+    # Fine layers padded by FINE_PAD so faces can be inferred past their edges and blended;
+    # the context must then be padded by the same extra amount.
+    bake(BakeSpec(args.res, layers, coarse_height=EquirectGrid(coarse), holdout=(), fine_pad=FINE_PAD, ctx_pad=896 + FINE_PAD), out)
     np.save(out / "coarse_height_equirect.npy", coarse)
     meta = load_meta(out)
     meta["planet"] = asdict(params)
@@ -100,21 +105,40 @@ def infer_faces(args, out: Path, t0: float) -> None:
     model = None if args.no_model else TerrainNet.load(args.checkpoint)[0]
     device = pick_device(args.device)
     meta = load_meta(out)
-    for name in FACE_NAMES:
+    fpad = meta.get("fine_pad", 0)
+    ctx_stored = meta["ctx"]["pad"]
+    preds: dict[str, list[np.ndarray]] = {"height": [], "rgb": []}
+    for face, name in enumerate(FACE_NAMES):
         fdir = out / name
         ctx = {n: np.load(fdir / f"ctx_{n}.npy") for n in CTX_LAYERS}
         if model is None:
             up = coarse_layers_for_face(ctx, args.res, meta["ctx"]["pad"], meta["ctx"]["factor"])
             np.save(fdir / "height.npy", up["height"].astype(np.float32))
         else:
-            fine = {n: np.load(fdir / f"{n}.npy", mmap_mode="r") for n in ("lat", "tavg", "trange", "prec")}
-            res = infer_face(model, fine, ctx, device=device, px_km=px_km_for_face(args.res))
-            np.save(fdir / "height.npy", res["height"])
-            np.save(fdir / "rgb.npy", res["rgb"])
-            Image.fromarray(res["rgb"][::step, ::step]).save(out / "preview" / f"{name}_rgb.png")
+            prefix = "pad_" if fpad else ""
+            fine = {n: np.load(fdir / f"{prefix}{n}.npy", mmap_mode="r") for n in ("lat", "tavg", "trange", "prec")}
+            res = infer_face(model, fine, ctx, device=device, px_km=px_km_for_face(args.res), face=face, seed=args.seed,
+                             origin_i=-fpad, origin_j=-fpad, ctx_stored_pad=ctx_stored)
+            preds["height"].append(res["height"])
+            preds["rgb"].append(res["rgb"])
+        print(f"{name} inferred ({time.time() - t0:.0f}s)", flush=True)
+    if model is not None:
+        if fpad:
+            print("blending face edges", flush=True)
+            heights = blend_faces(preds["height"], args.res, fpad)
+            rgbs = blend_faces(preds["rgb"], args.res, fpad)
+        else:
+            heights, rgbs = preds["height"], preds["rgb"]
+        for face, name in enumerate(FACE_NAMES):
+            fdir = out / name
+            np.save(fdir / "height.npy", heights[face].astype(np.float32))
+            np.save(fdir / "rgb.npy", np.clip(np.rint(rgbs[face]), 0, 255).astype(np.uint8))
+            Image.fromarray(np.load(fdir / "rgb.npy")[::step, ::step]).save(out / "preview" / f"{name}_rgb.png")
+    for name in FACE_NAMES:
+        fdir = out / name
         h = np.load(fdir / "height.npy", mmap_mode="r")[::step, ::step]
         Image.fromarray(np.clip((np.asarray(h) + 500) / 6000 * 255, 0, 255).astype(np.uint8)).save(out / "preview" / f"{name}_height.png")
-        print(f"{name} done ({time.time() - t0:.0f}s)", flush=True)
+    print(f"done ({time.time() - t0:.0f}s)", flush=True)
 
     def info(p):
         a = np.load(p, mmap_mode="r")
