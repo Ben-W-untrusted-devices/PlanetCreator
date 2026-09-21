@@ -139,8 +139,13 @@ class VGGPerceptual(nn.Module):
 
 def r1_penalty(disc: PatchDiscriminator, cond: torch.Tensor, real: torch.Tensor) -> torch.Tensor:
     """R1 gradient penalty (Mescheder et al. 2018): ||grad_x D(x_real)||^2, which keeps the
-    discriminator smooth around the data and lets a stronger adversarial weight be used."""
+    discriminator smooth around the data and lets a stronger adversarial weight be used.
+
+    A PatchGAN emits a map of logits; summing them before differentiating scales the
+    penalty by the number of patches (~900 here), so it is normalised per logit to keep
+    gamma on the usual single-logit scale."""
     real = real.detach().requires_grad_(True)
-    logits = disc(cond, real).sum()
-    (grad,) = torch.autograd.grad(logits, real, create_graph=True)
-    return grad.pow(2).flatten(1).sum(1).mean()
+    logits = disc(cond, real)
+    n_logits = logits[0].numel()
+    (grad,) = torch.autograd.grad(logits.sum(), real, create_graph=True)
+    return grad.pow(2).flatten(1).sum(1).mean() / n_logits

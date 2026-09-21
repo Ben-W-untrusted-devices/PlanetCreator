@@ -4,7 +4,9 @@
 # Claude session ending) and it continues each phase from its last checkpoint.
 #
 #   phase 1  runs/joint4      L1 + gradient + VGG perceptual, base=48, 10k steps
-#   phase 2  runs/joint4_adv  + adversarial (0.1) with an R1-regularised PatchGAN, 6k steps
+#   phase 2  runs/joint4_adv  + hinge PatchGAN (adv 0.05, D lr 1e-4), perceptual kept; 6k steps
+#            (R1 was tried and dropped: at any effective strength it stops the small
+#            PatchGAN learning at all — see docs/plan-resolution.md)
 #
 #   scripts/train_v2.sh              # start / resume, detached, machine kept awake
 #   tail -f runs/joint4/train.log    # watch (then runs/joint4_adv/train.log)
@@ -28,7 +30,7 @@ phase() {  # dir steps [trainer args...]
 
 if [ "$1" = "--fg" ]; then
   phase "$P1" "$S1" --mode joint --base 48 --perc 0.1 --eval-every 1000 >> "$P1/train.log" 2>&1
-  phase "$P2" "$S2" --mode joint --resume "$P1/last.pt" --base 48 --perc 0.1 --adv 0.1 --r1 10 --lr 1e-4 --eval-every 500 >> "$P2/train.log" 2>&1
+  phase "$P2" "$S2" --mode joint --resume "$P1/last.pt" --base 48 --perc 0.1 --adv 0.05 --d-lr 1e-4 --lr 1e-4 --eval-every 500 >> "$P2/train.log" 2>&1
   echo "train_v2 complete: $(date)" >> "$P2/train.log"
   exit 0
 fi

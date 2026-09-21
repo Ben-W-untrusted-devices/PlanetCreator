@@ -87,3 +87,14 @@ Same `TerrainNet`, trained on real pairs at those scales.
 Main drive has ~90 GB free. Stage A fits easily; stage B needs the raw tiles
 deleted after baking, or an external drive. Nothing under `data/`, `runs/` is
 ever committed; small test fixtures under `rust/**/tests/data` are.
+
+## Training recipe notes (2026-09-21)
+
+- Recipe v2 phase 1 (L1 + gradient + VGG perceptual, base 48, 10k steps):
+  held-out height 22.9 m, RGB 0.063 — best so far.
+- R1 gradient penalty on the PatchGAN: dropped. The penalty must be normalised
+  per logit (a 30x30 logit map otherwise scales it ~900x), and even then any
+  gamma strong enough to matter stops the discriminator learning within
+  thousands of steps; the unregularised discriminator needs input-gradient norms
+  of ~50 to separate real from fake. Phase 2 uses plain hinge GAN at 0.05 with
+  the perceptual term kept on to anchor colour.
